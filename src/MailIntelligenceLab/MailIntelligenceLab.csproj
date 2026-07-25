@@ -13,4 +13,11 @@
     </None>
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Include="Azure.Identity" Version="1.21.0" />
+    <PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.10" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.10" />
+    <PackageReference Include="Microsoft.Graph" Version="6.2.0" />
+  </ItemGroup>
+
 </Project>
