@@ -4,6 +4,8 @@ using Microsoft.Graph;
 using MailIntelligenceLab.Models;
 using Microsoft.Graph.Models;
 using System.Diagnostics;
+using System.Globalization;
+using CsvHelper;
 
 IConfiguration config = new ConfigurationBuilder()
     .SetBasePath(AppContext.BaseDirectory)
@@ -76,11 +78,6 @@ try
                 BodyLength: message.Body?.Content?.Length ?? 0
             ));
 
-            if (emailList.Count % 100 == 0)
-            {
-                Console.WriteLine($"  {emailList.Count} mensagens lidas...");
-            }
-
             return !maxMessages.HasValue || emailList.Count < maxMessages.Value;
         });
 
@@ -130,6 +127,48 @@ try
         int quantidade = ageBuckets.GetValueOrDefault(bucket, 0);
         Console.WriteLine($"  {AgeBucketDisplay.Labels[bucket]}: {quantidade} mensagens");
     }
+
+    var senderReportRows = emailList
+        .GroupBy(email => email.SenderAddress)
+        .Select(group =>
+        {
+            var oldestDate = group.Min(e => e.ReceivedDateTime ?? DateTimeOffset.UtcNow);
+            var newestDate = group.Max(e => e.ReceivedDateTime ?? DateTimeOffset.UtcNow);
+            double averageAgeDays = group.Average(e =>
+                (DateTimeOffset.UtcNow - (e.ReceivedDateTime ?? DateTimeOffset.UtcNow)).TotalDays);
+
+            return new SenderReportRow(
+                SenderAddress: group.Key,
+                SenderName: group.First().SenderName,
+                MessageCount: group.Count(),
+                TotalBodyLengthProxy: group.Sum(e => (long)e.BodyLength),
+                AverageAgeDays: Math.Round(averageAgeDays, 1),
+                AverageAgeYears: Math.Round(averageAgeDays / 365.25, 2),
+                OldestReceivedDate: oldestDate.ToString("yyyy-MM-dd"),
+                NewestReceivedDate: newestDate.ToString("yyyy-MM-dd"),
+                AttachmentCount: group.Count(e => e.HasAttachments)
+            );
+        })
+        .OrderByDescending(r => r.MessageCount)
+        .ToList();
+
+    string rawFolderRelative = config["Reports:RawFolder"]!;
+    string rawFolder = Path.GetFullPath(rawFolderRelative);
+    Directory.CreateDirectory(rawFolder);
+
+    string timestamp = DateTime.Now.ToString("yyyy-MM-dd_HHmm");
+    string filePath = Path.Combine(rawFolder, $"{timestamp}_senders-report.csv");
+
+    var csvConfig = new CsvHelper.Configuration.CsvConfiguration(CultureInfo.InvariantCulture);
+
+    using (var writer = new StreamWriter(filePath))
+    using (var csv = new CsvWriter(writer, csvConfig))
+    {
+        csv.WriteRecords(senderReportRows);
+    }
+
+    Console.WriteLine();
+    Console.WriteLine($"Relatório CSV salvo em: {filePath}");
 }
 catch (Exception ex)
 {
