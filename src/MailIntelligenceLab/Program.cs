@@ -6,6 +6,7 @@ using Microsoft.Graph.Models;
 using System.Diagnostics;
 using System.Globalization;
 using CsvHelper;
+using Azure.Core;
 
 IConfiguration config = new ConfigurationBuilder()
     .SetBasePath(AppContext.BaseDirectory)
@@ -15,16 +16,45 @@ IConfiguration config = new ConfigurationBuilder()
 string clientId = config["AzureAd:ClientId"]!;
 string tenantId = config["AzureAd:TenantId"]!;
 
-var credential = new DeviceCodeCredential(new DeviceCodeCredentialOptions
+string tokenCacheFolder = config["TokenCache:FolderPath"]!
+    .Replace("~", Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+Directory.CreateDirectory(tokenCacheFolder);
+string authRecordPath = Path.Combine(tokenCacheFolder, "authrecord.bin");
+
+var tokenCacheOptions = new TokenCachePersistenceOptions
+{
+    Name = config["TokenCache:CacheName"]
+};
+
+AuthenticationRecord? authRecord = null;
+if (File.Exists(authRecordPath))
+{
+    using var readStream = new FileStream(authRecordPath, FileMode.Open, FileAccess.Read);
+    authRecord = await AuthenticationRecord.DeserializeAsync(readStream);
+}
+
+var credentialOptions = new DeviceCodeCredentialOptions
 {
     TenantId = tenantId,
     ClientId = clientId,
+    TokenCachePersistenceOptions = tokenCacheOptions,
+    AuthenticationRecord = authRecord,
     DeviceCodeCallback = (code, cancellationToken) =>
     {
         Console.WriteLine(code.Message);
         return Task.CompletedTask;
     }
-});
+};
+
+var credential = new DeviceCodeCredential(credentialOptions);
+
+if (authRecord is null)
+{
+    var graphScope = new TokenRequestContext(new[] { "User.Read", "Mail.Read" });
+    var newRecord = await credential.AuthenticateAsync(graphScope);
+    using var writeStream = new FileStream(authRecordPath, FileMode.Create, FileAccess.Write);
+    await newRecord.SerializeAsync(writeStream);
+}
 
 var graphClient = new GraphServiceClient(credential, new[] { "User.Read", "Mail.Read" });
 
