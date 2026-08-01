@@ -7,6 +7,7 @@ using System.Diagnostics;
 using System.Globalization;
 using CsvHelper;
 using Azure.Core;
+using System.Collections.Concurrent;
 
 IConfiguration config = new ConfigurationBuilder()
     .SetBasePath(AppContext.BaseDirectory)
@@ -89,7 +90,7 @@ try
     {
         requestConfiguration.QueryParameters.Select = new[]
         {
-            "sender", "receivedDateTime", "hasAttachments", "parentFolderId", "body"
+            "id", "sender", "receivedDateTime", "hasAttachments", "parentFolderId", "body"
         };
         requestConfiguration.QueryParameters.Top = 50;
     });
@@ -100,12 +101,14 @@ try
         message =>
         {
             emailList.Add(new EmailMetadata(
+                Id: message.Id ?? "",
                 SenderAddress: message.Sender?.EmailAddress?.Address ?? "(desconhecido)",
                 SenderName: message.Sender?.EmailAddress?.Name ?? "(desconhecido)",
                 ReceivedDateTime: message.ReceivedDateTime,
                 HasAttachments: message.HasAttachments ?? false,
                 ParentFolderId: message.ParentFolderId ?? "",
-                BodyLength: message.Body?.Content?.Length ?? 0
+                BodyLength: message.Body?.Content?.Length ?? 0,
+                BodyHasCidReference: message.Body?.Content?.Contains("cid:", StringComparison.OrdinalIgnoreCase) ?? false
             ));
 
             return !maxMessages.HasValue || emailList.Count < maxMessages.Value;
@@ -118,6 +121,73 @@ try
     Console.WriteLine();
     Console.WriteLine($"Total lido: {emailList.Count} mensagens.");
     Console.WriteLine($"Tempo total: {stopwatch.Elapsed:mm\\:ss}");
+
+    Console.WriteLine();
+    Console.WriteLine("Calculando tamanho real dos anexos...");
+
+    var messagesWithAttachments = emailList.Where(e => e.HasAttachments).ToList();
+    int inlineCandidates = emailList.Count(e => !e.HasAttachments && e.BodyHasCidReference);
+
+    Console.WriteLine($"Mensagens marcadas com anexo: {messagesWithAttachments.Count}");
+    Console.WriteLine($"[diagnóstico] Mensagens SEM hasAttachments mas com referência 'cid:' no corpo: {inlineCandidates}");
+
+    var attachmentSizes = new ConcurrentDictionary<string, long>();
+    var attachmentFileCounts = new ConcurrentDictionary<string, int>();
+
+    using var throttle = new SemaphoreSlim(4);
+    int requestCount = 0;
+    int failureCount = 0;
+    int processedCount = 0;
+
+    var attachmentStopwatch = Stopwatch.StartNew();
+
+    var fetchTasks = messagesWithAttachments.Select(async email =>
+    {
+        await throttle.WaitAsync();
+        try
+        {
+            Interlocked.Increment(ref requestCount);
+
+            var attachments = await graphClient.Me.Messages[email.Id].Attachments
+                .GetAsync(requestConfiguration =>
+                {
+                    requestConfiguration.QueryParameters.Select = new[]
+                    {
+                        "size", "isInline", "name", "contentType"
+                    };
+                });
+
+            attachmentSizes[email.Id] = attachments?.Value?.Sum(a => (long)(a.Size ?? 0)) ?? 0;
+            attachmentFileCounts[email.Id] = attachments?.Value?.Count ?? 0;
+        }
+        catch (Exception)
+        {
+            Interlocked.Increment(ref failureCount);
+            attachmentSizes[email.Id] = 0;
+            attachmentFileCounts[email.Id] = 0;
+        }
+        finally
+        {
+            throttle.Release();
+
+            int done = Interlocked.Increment(ref processedCount);
+            if (done % 250 == 0)
+            {
+                Console.WriteLine($"  ... {done}/{messagesWithAttachments.Count} mensagens processadas");
+            }
+        }
+    });
+
+    await Task.WhenAll(fetchTasks);
+    attachmentStopwatch.Stop();
+
+    long totalAttachmentBytes = attachmentSizes.Values.Sum();
+
+    Console.WriteLine();
+    Console.WriteLine($"Requisições de anexo: {requestCount} (falhas: {failureCount})");
+    Console.WriteLine($"Tempo da fase de anexos: {attachmentStopwatch.Elapsed:mm\\:ss}");
+    Console.WriteLine($"Throughput médio: {requestCount / Math.Max(attachmentStopwatch.Elapsed.TotalSeconds, 1):F1} req/s");
+    Console.WriteLine($"Tamanho total de anexos: {totalAttachmentBytes / 1024.0 / 1024.0:N1} MB");
 
     var senderAggregates = emailList
     .GroupBy(email => email.SenderAddress)
@@ -146,6 +216,26 @@ try
         Console.WriteLine($"  {sender.SenderName} <{sender.SenderAddress}>: {sender.TotalBodyLength:N0} caracteres (proxy), {sender.MessageCount} mensagens");
     }
 
+    var topByAttachmentSize = emailList
+        .GroupBy(e => e.SenderAddress)
+        .Select(g => new
+        {
+            Name = g.First().SenderName,
+            Address = g.Key,
+            Bytes = g.Sum(e => attachmentSizes.GetValueOrDefault(e.Id, 0))
+        })
+        .Where(x => x.Bytes > 0)
+        .OrderByDescending(x => x.Bytes)
+        .Take(15)
+        .ToList();
+
+    Console.WriteLine();
+    Console.WriteLine("Top 15 remetentes por tamanho REAL de anexos:");
+    foreach (var sender in topByAttachmentSize)
+    {
+        Console.WriteLine($"  {sender.Name} <{sender.Address}>: {sender.Bytes / 1024.0 / 1024.0:N1} MB");
+    }
+
     var ageBuckets = emailList
         .GroupBy(email => GetAgeBucket(email.ReceivedDateTime))
         .ToDictionary(group => group.Key, group => group.Count());
@@ -171,12 +261,15 @@ try
                 SenderAddress: group.Key,
                 SenderName: group.First().SenderName,
                 MessageCount: group.Count(),
+                MessagesWithAttachmentsCount: group.Count(e => e.HasAttachments),
+                AttachmentFileCount: group.Sum(e => attachmentFileCounts.GetValueOrDefault(e.Id, 0)),
+                TotalAttachmentSizeMB: Math.Round(group.Sum(e => attachmentSizes.GetValueOrDefault(e.Id, 0)) / 1024.0 / 1024.0, 2),
+                TotalAttachmentSizeBytes: group.Sum(e => attachmentSizes.GetValueOrDefault(e.Id, 0)),
                 TotalBodyLengthProxy: group.Sum(e => (long)e.BodyLength),
                 AverageAgeDays: Math.Round(averageAgeDays, 1),
                 AverageAgeYears: Math.Round(averageAgeDays / 365.25, 2),
                 OldestReceivedDate: oldestDate.ToString("yyyy-MM-dd"),
-                NewestReceivedDate: newestDate.ToString("yyyy-MM-dd"),
-                AttachmentCount: group.Count(e => e.HasAttachments)
+                NewestReceivedDate: newestDate.ToString("yyyy-MM-dd")
             );
         })
         .OrderByDescending(r => r.MessageCount)
