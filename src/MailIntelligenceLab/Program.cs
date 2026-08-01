@@ -126,10 +126,12 @@ try
     Console.WriteLine("Calculando tamanho real dos anexos...");
 
     var messagesWithAttachments = emailList.Where(e => e.HasAttachments).ToList();
-    int inlineCandidates = emailList.Count(e => !e.HasAttachments && e.BodyHasCidReference);
+    var inlineCandidateMessages = emailList.Where(e => !e.HasAttachments && e.BodyHasCidReference).ToList();
+    var messagesToFetch = messagesWithAttachments.Concat(inlineCandidateMessages).ToList();
 
-    Console.WriteLine($"Mensagens marcadas com anexo: {messagesWithAttachments.Count}");
-    Console.WriteLine($"[diagnóstico] Mensagens SEM hasAttachments mas com referência 'cid:' no corpo: {inlineCandidates}");
+    Console.WriteLine($"Mensagens marcadas com anexo (hasAttachments): {messagesWithAttachments.Count}");
+    Console.WriteLine($"Candidatas por 'cid:' no corpo (hasAttachments=false): {inlineCandidateMessages.Count}");
+    Console.WriteLine($"Total a verificar: {messagesToFetch.Count}");
 
     var attachmentSizes = new ConcurrentDictionary<string, long>();
     var attachmentFileCounts = new ConcurrentDictionary<string, int>();
@@ -141,7 +143,7 @@ try
 
     var attachmentStopwatch = Stopwatch.StartNew();
 
-    var fetchTasks = messagesWithAttachments.Select(async email =>
+    var fetchTasks = messagesToFetch.Select(async email =>
     {
         await throttle.WaitAsync();
         try
@@ -173,7 +175,7 @@ try
             int done = Interlocked.Increment(ref processedCount);
             if (done % 250 == 0)
             {
-                Console.WriteLine($"  ... {done}/{messagesWithAttachments.Count} mensagens processadas");
+                Console.WriteLine($"  ... {done}/{messagesToFetch.Count} mensagens processadas");
             }
         }
     });
@@ -188,6 +190,13 @@ try
     Console.WriteLine($"Tempo da fase de anexos: {attachmentStopwatch.Elapsed:mm\\:ss}");
     Console.WriteLine($"Throughput médio: {requestCount / Math.Max(attachmentStopwatch.Elapsed.TotalSeconds, 1):F1} req/s");
     Console.WriteLine($"Tamanho total de anexos: {totalAttachmentBytes / 1024.0 / 1024.0:N1} MB");
+
+    int candidatesWithRealAttachment = inlineCandidateMessages.Count(e => attachmentFileCounts.GetValueOrDefault(e.Id, 0) > 0);
+    long candidatesTotalBytes = inlineCandidateMessages.Sum(e => attachmentSizes.GetValueOrDefault(e.Id, 0));
+
+    Console.WriteLine();
+    Console.WriteLine($"[diagnóstico] Candidatas 'cid:' que realmente retornaram anexo: {candidatesWithRealAttachment}/{inlineCandidateMessages.Count}");
+    Console.WriteLine($"[diagnóstico] Tamanho capturado só nas candidatas: {candidatesTotalBytes / 1024.0 / 1024.0:N1} MB");
 
     var senderAggregates = emailList
     .GroupBy(email => email.SenderAddress)
