@@ -20,10 +20,10 @@ public static class AgeBucketDisplay
 {
     public static readonly Dictionary<AgeBucket, string> Labels = new()
     {
-        [AgeBucket.Days0To30] = "0-30 dias",
-        [AgeBucket.Days31To90] = "31-90 dias",
-        [AgeBucket.Days91To365] = "91-365 dias",
-        [AgeBucket.MoreThan365] = "Mais de 365 dias",
-        [AgeBucket.Unknown] = "Idade desconhecida"
+        [AgeBucket.Days0To30] = "0-30 days",
+        [AgeBucket.Days31To90] = "31-90 days",
+        [AgeBucket.Days91To365] = "91-365 days",
+        [AgeBucket.MoreThan365] = "More than 365 days",
+        [AgeBucket.Unknown] = "Unknown age"
     };
 }

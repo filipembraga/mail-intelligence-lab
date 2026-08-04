@@ -62,11 +62,11 @@ var graphClient = new GraphServiceClient(credential, new[] { "User.Read", "Mail.
 try
 {
     var me = await graphClient.Me.GetAsync();
-    Console.WriteLine($"Autenticado como: {me?.DisplayName} ({me?.Mail ?? me?.UserPrincipalName})");
+    Console.WriteLine($"Authenticated as: {me?.DisplayName} ({me?.Mail ?? me?.UserPrincipalName})");
 }
 catch (Exception ex)
 {
-    Console.WriteLine($"ERRO ao chamar o Graph: {ex.Message}");
+    Console.WriteLine($"ERROR calling Graph: {ex.Message}");
     Console.WriteLine(ex);
     return;
 }
@@ -74,10 +74,10 @@ catch (Exception ex)
 int? maxMessages = config.GetValue<int?>("Discovery:MaxMessages");
 
 Console.WriteLine();
-Console.WriteLine("Lendo metadados da Inbox...");
+Console.WriteLine("Reading Inbox metadata...");
 if (maxMessages.HasValue)
 {
-    Console.WriteLine($"(modo de teste: parando após {maxMessages.Value} mensagens)");
+    Console.WriteLine($"(test mode: stopping after {maxMessages.Value} messages)");
 }
 
 var stopwatch = Stopwatch.StartNew();
@@ -102,8 +102,8 @@ try
         {
             emailList.Add(new EmailMetadata(
                 Id: message.Id ?? "",
-                SenderAddress: message.Sender?.EmailAddress?.Address ?? "(desconhecido)",
-                SenderName: message.Sender?.EmailAddress?.Name ?? "(desconhecido)",
+                SenderAddress: message.Sender?.EmailAddress?.Address ?? "(unknown)",
+                SenderName: message.Sender?.EmailAddress?.Name ?? "(unknown)",
                 ReceivedDateTime: message.ReceivedDateTime,
                 HasAttachments: message.HasAttachments ?? false,
                 ParentFolderId: message.ParentFolderId ?? "",
@@ -119,19 +119,19 @@ try
     stopwatch.Stop();
 
     Console.WriteLine();
-    Console.WriteLine($"Total lido: {emailList.Count} mensagens.");
-    Console.WriteLine($"Tempo total: {stopwatch.Elapsed:mm\\:ss}");
+    Console.WriteLine($"Total read: {emailList.Count} messages.");
+    Console.WriteLine($"Elapsed: {stopwatch.Elapsed:mm\\:ss}");
 
     Console.WriteLine();
-    Console.WriteLine("Calculando tamanho real dos anexos...");
+    Console.WriteLine("Calculating real attachment sizes...");
 
     var messagesWithAttachments = emailList.Where(e => e.HasAttachments).ToList();
     var inlineCandidateMessages = emailList.Where(e => !e.HasAttachments && e.BodyHasCidReference).ToList();
     var messagesToFetch = messagesWithAttachments.Concat(inlineCandidateMessages).ToList();
 
-    Console.WriteLine($"Mensagens marcadas com anexo (hasAttachments): {messagesWithAttachments.Count}");
-    Console.WriteLine($"Candidatas por 'cid:' no corpo (hasAttachments=false): {inlineCandidateMessages.Count}");
-    Console.WriteLine($"Total a verificar: {messagesToFetch.Count}");
+    Console.WriteLine($"Messages flagged with attachment (hasAttachments): {messagesWithAttachments.Count}");
+    Console.WriteLine($"cid: candidates in body (hasAttachments=false): {inlineCandidateMessages.Count}");
+    Console.WriteLine($"Total to check: {messagesToFetch.Count}");
 
     var attachmentSizes = new ConcurrentDictionary<string, long>();
     var attachmentFileCounts = new ConcurrentDictionary<string, int>();
@@ -175,7 +175,7 @@ try
             int done = Interlocked.Increment(ref processedCount);
             if (done % 250 == 0)
             {
-                Console.WriteLine($"  ... {done}/{messagesToFetch.Count} mensagens processadas");
+                Console.WriteLine($"  ... {done}/{messagesToFetch.Count} messages processed");
             }
         }
     });
@@ -186,17 +186,17 @@ try
     long totalAttachmentBytes = attachmentSizes.Values.Sum();
 
     Console.WriteLine();
-    Console.WriteLine($"Requisições de anexo: {requestCount} (falhas: {failureCount})");
-    Console.WriteLine($"Tempo da fase de anexos: {attachmentStopwatch.Elapsed:mm\\:ss}");
-    Console.WriteLine($"Throughput médio: {requestCount / Math.Max(attachmentStopwatch.Elapsed.TotalSeconds, 1):F1} req/s");
-    Console.WriteLine($"Tamanho total de anexos: {totalAttachmentBytes / 1024.0 / 1024.0:N1} MB");
+    Console.WriteLine($"Attachment requests: {requestCount} (failures: {failureCount})");
+    Console.WriteLine($"Attachment phase elapsed: {attachmentStopwatch.Elapsed:mm\\:ss}");
+    Console.WriteLine($"Average throughput: {requestCount / Math.Max(attachmentStopwatch.Elapsed.TotalSeconds, 1):F1} req/s");
+    Console.WriteLine($"Total attachment size: {totalAttachmentBytes / 1024.0 / 1024.0:N1} MB");
 
     int candidatesWithRealAttachment = inlineCandidateMessages.Count(e => attachmentFileCounts.GetValueOrDefault(e.Id, 0) > 0);
     long candidatesTotalBytes = inlineCandidateMessages.Sum(e => attachmentSizes.GetValueOrDefault(e.Id, 0));
 
     Console.WriteLine();
-    Console.WriteLine($"[diagnóstico] Candidatas 'cid:' que realmente retornaram anexo: {candidatesWithRealAttachment}/{inlineCandidateMessages.Count}");
-    Console.WriteLine($"[diagnóstico] Tamanho capturado só nas candidatas: {candidatesTotalBytes / 1024.0 / 1024.0:N1} MB");
+    Console.WriteLine($"[diagnostic] cid: candidates that actually returned an attachment: {candidatesWithRealAttachment}/{inlineCandidateMessages.Count}");
+    Console.WriteLine($"[diagnostic] Size recovered from candidates only: {candidatesTotalBytes / 1024.0 / 1024.0:N1} MB");
 
     var senderAggregates = emailList
     .GroupBy(email => email.SenderAddress)
@@ -212,17 +212,17 @@ try
     var topBySize = senderAggregates.OrderByDescending(s => s.TotalBodyLength).Take(15).ToList();
 
     Console.WriteLine();
-    Console.WriteLine("Top 15 remetentes por quantidade de mensagens:");
+    Console.WriteLine("Top 15 senders by message count:");
     foreach (var sender in topByCount)
     {
-        Console.WriteLine($"  {sender.SenderName} <{sender.SenderAddress}>: {sender.MessageCount} mensagens, {sender.TotalBodyLength:N0} caracteres (proxy)");
+        Console.WriteLine($"  {sender.SenderName} <{sender.SenderAddress}>: {sender.MessageCount} messages, {sender.TotalBodyLength:N0} characters (proxy)");
     }
 
     Console.WriteLine();
-    Console.WriteLine("Top 15 remetentes por tamanho total (proxy de caracteres do body):");
+    Console.WriteLine("Top 15 senders by total size (body character proxy):");
     foreach (var sender in topBySize)
     {
-        Console.WriteLine($"  {sender.SenderName} <{sender.SenderAddress}>: {sender.TotalBodyLength:N0} caracteres (proxy), {sender.MessageCount} mensagens");
+        Console.WriteLine($"  {sender.SenderName} <{sender.SenderAddress}>: {sender.TotalBodyLength:N0} characters (proxy), {sender.MessageCount} messages");
     }
 
     var topByAttachmentSize = emailList
@@ -239,7 +239,7 @@ try
         .ToList();
 
     Console.WriteLine();
-    Console.WriteLine("Top 15 remetentes por tamanho REAL de anexos:");
+    Console.WriteLine("Top 15 senders by REAL attachment size:");
     foreach (var sender in topByAttachmentSize)
     {
         Console.WriteLine($"  {sender.Name} <{sender.Address}>: {sender.Bytes / 1024.0 / 1024.0:N1} MB");
@@ -250,11 +250,11 @@ try
         .ToDictionary(group => group.Key, group => group.Count());
 
     Console.WriteLine();
-    Console.WriteLine("Distribuição por idade:");
+    Console.WriteLine("Age distribution:");
     foreach (var bucket in Enum.GetValues<AgeBucket>())
     {
-        int quantidade = ageBuckets.GetValueOrDefault(bucket, 0);
-        Console.WriteLine($"  {AgeBucketDisplay.Labels[bucket]}: {quantidade} mensagens");
+        int count = ageBuckets.GetValueOrDefault(bucket, 0);
+        Console.WriteLine($"  {AgeBucketDisplay.Labels[bucket]}: {count} messages");
     }
 
     var senderReportRows = emailList
@@ -300,12 +300,12 @@ try
     }
 
     Console.WriteLine();
-    Console.WriteLine($"Relatório CSV salvo em: {filePath}");
+    Console.WriteLine($"CSV report saved to: {filePath}");
 }
 catch (Exception ex)
 {
     stopwatch.Stop();
-    Console.WriteLine($"ERRO ao ler mensagens: {ex.Message}");
+    Console.WriteLine($"ERROR reading messages: {ex.Message}");
     Console.WriteLine(ex);
 }
 
@@ -316,9 +316,9 @@ static AgeBucket GetAgeBucket(DateTimeOffset? receivedDateTime)
         return AgeBucket.Unknown;
     }
 
-    double diasDesdeRecebimento = (DateTimeOffset.UtcNow - receivedDateTime.Value).TotalDays;
+    double daysSinceReceived = (DateTimeOffset.UtcNow - receivedDateTime.Value).TotalDays;
 
-    return diasDesdeRecebimento switch
+    return daysSinceReceived switch
     {
         <= 30 => AgeBucket.Days0To30,
         <= 90 => AgeBucket.Days31To90,
