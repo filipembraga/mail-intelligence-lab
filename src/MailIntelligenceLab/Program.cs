@@ -90,7 +90,7 @@ try
     {
         requestConfiguration.QueryParameters.Select = new[]
         {
-            "id", "sender", "receivedDateTime", "hasAttachments", "parentFolderId", "body"
+            "id", "from", "receivedDateTime", "hasAttachments", "parentFolderId", "body"
         };
         requestConfiguration.QueryParameters.Top = 50;
     });
@@ -100,10 +100,13 @@ try
         messagesResponse!,
         message =>
         {
+            // Graph exposes both From (message author) and Sender (transmitting mailbox).
+            // They diverge on delegated/list sends. We key on From — it's what Outlook
+            // displays and what "this sender" means to a human deciding what to delete.
             emailList.Add(new EmailMetadata(
                 Id: message.Id ?? "",
-                SenderAddress: message.Sender?.EmailAddress?.Address ?? "(unknown)",
-                SenderName: message.Sender?.EmailAddress?.Name ?? "(unknown)",
+                SenderAddress: message.From?.EmailAddress?.Address ?? "(unknown)",
+                SenderName: message.From?.EmailAddress?.Name ?? "(unknown)",
                 ReceivedDateTime: message.ReceivedDateTime,
                 HasAttachments: message.HasAttachments ?? false,
                 ParentFolderId: message.ParentFolderId ?? "",
