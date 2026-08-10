@@ -9,6 +9,8 @@ using CsvHelper;
 using Azure.Core;
 using System.Collections.Concurrent;
 
+CultureInfo.DefaultThreadCurrentCulture = CultureInfo.InvariantCulture;
+
 IConfiguration config = new ConfigurationBuilder()
     .SetBasePath(AppContext.BaseDirectory)
     .AddJsonFile("appsettings.json", optional: false)
