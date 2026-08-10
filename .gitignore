@@ -484,3 +484,4 @@ $RECYCLE.BIN/
 # Not sanitized evidences and docs
 docs/evidence/raw/
 docs/reports/raw/
+docs/plans/raw/

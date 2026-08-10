@@ -8,6 +8,7 @@ using System.Globalization;
 using CsvHelper;
 using Azure.Core;
 using System.Collections.Concurrent;
+using MailIntelligenceLab.Planning;
 
 CultureInfo.DefaultThreadCurrentCulture = CultureInfo.InvariantCulture;
 
@@ -15,6 +16,62 @@ IConfiguration config = new ConfigurationBuilder()
     .SetBasePath(AppContext.BaseDirectory)
     .AddJsonFile("appsettings.json", optional: false)
     .Build();
+
+if (args.Length > 0 && args[0].Equals("plan", StringComparison.OrdinalIgnoreCase))
+{
+    string reportsFolder = Path.GetFullPath(config["Reports:RawFolder"]!);
+    string plansFolder = Path.GetFullPath(config["Plans:RawFolder"]!);
+
+    var latestReport = new DirectoryInfo(reportsFolder)
+        .GetFiles("*_senders-report.csv")
+        .OrderByDescending(file => file.Name, StringComparer.Ordinal)
+        .FirstOrDefault();
+
+    if (latestReport is null)
+    {
+        Console.WriteLine($"No sender report found in: {reportsFolder}");
+        return;
+    }
+
+    Console.WriteLine($"Source report: {latestReport.Name}");
+
+    List<SenderReportRow> reportRows;
+    using (var reportReader = new StreamReader(latestReport.FullName))
+    using (var reportCsv = new CsvReader(reportReader, CultureInfo.InvariantCulture))
+    {
+        reportRows = reportCsv.GetRecords<SenderReportRow>().ToList();
+    }
+
+    var planRows = ActionPlanGenerator.Generate(reportRows);
+
+    Directory.CreateDirectory(plansFolder);
+
+    // UTC, not local time: this timestamp is the plan's freeze bound, used as
+    // a receivedDateTime upper limit when the plan is executed.
+    string planTimestamp = DateTime.UtcNow.ToString("yyyy-MM-dd_HHmm");
+    string planPath = Path.Combine(plansFolder, $"{planTimestamp}_action-plan.csv");
+
+    using (var planWriter = new StreamWriter(planPath))
+    using (var planCsv = new CsvWriter(planWriter, CultureInfo.InvariantCulture))
+    {
+        planCsv.WriteRecords(planRows);
+    }
+
+    Console.WriteLine($"Senders in report: {reportRows.Count}");
+    Console.WriteLine($"Senders in plan: {planRows.Count} (excluded as unresolvable: {reportRows.Count - planRows.Count})");
+    Console.WriteLine($"Action plan saved to: {planPath}");
+    Console.WriteLine("Edit the Action column ('delete' to act, blank to keep), then run the executor.");
+    return;
+}
+
+if (args.Length > 0)
+{
+    Console.WriteLine($"Unknown argument: {args[0]}");
+    Console.WriteLine("Usage:");
+    Console.WriteLine("  dotnet run            discovery — full mailbox read");
+    Console.WriteLine("  dotnet run -- plan    generate action plan from newest report");
+    return;
+}
 
 string clientId = config["AzureAd:ClientId"]!;
 string tenantId = config["AzureAd:TenantId"]!;
@@ -144,7 +201,6 @@ try
     using var throttle = new SemaphoreSlim(4);
     int requestCount = 0;
     int failureCount = 0;
-    int processedCount = 0;
 
     var attachmentStopwatch = Stopwatch.StartNew();
 
@@ -176,12 +232,6 @@ try
         finally
         {
             throttle.Release();
-
-            int done = Interlocked.Increment(ref processedCount);
-            if (done % 250 == 0)
-            {
-                Console.WriteLine($"  ... {done}/{messagesToFetch.Count} messages processed");
-            }
         }
     });
 
