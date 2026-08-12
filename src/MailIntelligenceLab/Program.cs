@@ -42,7 +42,7 @@ if (args.Length > 0 && args[0].Equals("plan", StringComparison.OrdinalIgnoreCase
         reportRows = reportCsv.GetRecords<SenderReportRow>().ToList();
     }
 
-    var planRows = ActionPlanGenerator.Generate(reportRows);
+    var generation = ActionPlanGenerator.Generate(reportRows);
 
     Directory.CreateDirectory(plansFolder);
 
@@ -54,13 +54,78 @@ if (args.Length > 0 && args[0].Equals("plan", StringComparison.OrdinalIgnoreCase
     using (var planWriter = new StreamWriter(planPath))
     using (var planCsv = new CsvWriter(planWriter, CultureInfo.InvariantCulture))
     {
-        planCsv.WriteRecords(planRows);
+        planCsv.WriteRecords(generation.Rows);
     }
 
     Console.WriteLine($"Senders in report: {reportRows.Count}");
-    Console.WriteLine($"Senders in plan: {planRows.Count} (excluded as unresolvable: {reportRows.Count - planRows.Count})");
+    Console.WriteLine($"Senders in plan: {generation.Rows.Count} (merged by case: {generation.MergedByCase}, excluded as unresolvable: {generation.ExcludedAsUnresolvable})");
     Console.WriteLine($"Action plan saved to: {planPath}");
     Console.WriteLine("Edit the Action column ('delete' to act, blank to keep), then run the executor.");
+    return;
+}
+
+if (args.Length > 0 && args[0].Equals("validate", StringComparison.OrdinalIgnoreCase))
+{
+    string plansFolder = Path.GetFullPath(config["Plans:RawFolder"]!);
+
+    var latestPlan = new DirectoryInfo(plansFolder)
+        .GetFiles("*_action-plan.csv")
+        .OrderByDescending(file => file.Name, StringComparer.Ordinal)
+        .FirstOrDefault();
+
+    if (latestPlan is null)
+    {
+        Console.WriteLine($"No action plan found in: {plansFolder}");
+        return;
+    }
+
+    Console.WriteLine($"Plan file: {latestPlan.Name}");
+
+    // The filename carries the freeze bound the executor will apply as a
+    // receivedDateTime upper limit. If it can't be parsed, the plan is unusable.
+    string timestampPart = latestPlan.Name[..^"_action-plan.csv".Length];
+    if (!DateTime.TryParseExact(
+            timestampPart,
+            "yyyy-MM-dd_HHmm",
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+            out DateTime freezeBoundUtc))
+    {
+        Console.WriteLine($"FAILED: cannot read freeze bound from filename '{latestPlan.Name}'.");
+        return;
+    }
+
+    Console.WriteLine($"Freeze bound (UTC): {freezeBoundUtc:yyyy-MM-ddTHH:mm:ssZ}");
+
+    List<ActionPlanRow> planRows;
+    using (var planReader = new StreamReader(latestPlan.FullName))
+    using (var planCsv = new CsvReader(planReader, CultureInfo.InvariantCulture))
+    {
+        planRows = planCsv.GetRecords<ActionPlanRow>().ToList();
+    }
+
+    var validation = ActionPlanValidator.Validate(planRows);
+
+    Console.WriteLine($"Rows: {validation.TotalRows}");
+    Console.WriteLine($"Marked for deletion: {validation.RowsMarkedForDeletion}");
+    Console.WriteLine($"Messages targeted (per plan): {validation.MessagesTargeted}");
+    Console.WriteLine($"Attachment weight targeted: {validation.BytesTargeted / 1024.0 / 1024.0:N1} MB");
+
+    if (!validation.IsValid)
+    {
+        Console.WriteLine();
+        Console.WriteLine($"FAILED with {validation.Errors.Count} error(s):");
+        foreach (string error in validation.Errors)
+        {
+            Console.WriteLine($"  - {error}");
+        }
+        return;
+    }
+
+    Console.WriteLine();
+    Console.WriteLine(validation.RowsMarkedForDeletion == 0
+        ? "Plan is valid, but no row is marked for deletion — nothing to execute."
+        : "Plan is valid.");
     return;
 }
 
@@ -70,6 +135,7 @@ if (args.Length > 0)
     Console.WriteLine("Usage:");
     Console.WriteLine("  dotnet run            discovery — full mailbox read");
     Console.WriteLine("  dotnet run -- plan    generate action plan from newest report");
+    Console.WriteLine("  dotnet run -- validate  check the newest edited plan");
     return;
 }
 
