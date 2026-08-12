@@ -49,7 +49,7 @@ if (args.Length > 0 && args[0].Equals("plan", StringComparison.OrdinalIgnoreCase
     // UTC, not local time: this timestamp is the plan's freeze bound, used as
     // a receivedDateTime upper limit when the plan is executed.
     string planTimestamp = DateTime.UtcNow.ToString("yyyy-MM-dd_HHmm");
-    string planPath = Path.Combine(plansFolder, $"{planTimestamp}_action-plan.csv");
+    string planPath = Path.Combine(plansFolder, $"{planTimestamp}{ActionPlanLoader.FileSuffix}");
 
     using (var planWriter = new StreamWriter(planPath))
     using (var planCsv = new CsvWriter(planWriter, CultureInfo.InvariantCulture))
@@ -68,43 +68,24 @@ if (args.Length > 0 && args[0].Equals("validate", StringComparison.OrdinalIgnore
 {
     string plansFolder = Path.GetFullPath(config["Plans:RawFolder"]!);
 
-    var latestPlan = new DirectoryInfo(plansFolder)
-        .GetFiles("*_action-plan.csv")
-        .OrderByDescending(file => file.Name, StringComparer.Ordinal)
-        .FirstOrDefault();
-
-    if (latestPlan is null)
+    var latestPlanFile = ActionPlanLoader.FindNewest(plansFolder);
+    if (latestPlanFile is null)
     {
         Console.WriteLine($"No action plan found in: {plansFolder}");
         return;
     }
 
-    Console.WriteLine($"Plan file: {latestPlan.Name}");
-
-    // The filename carries the freeze bound the executor will apply as a
-    // receivedDateTime upper limit. If it can't be parsed, the plan is unusable.
-    string timestampPart = latestPlan.Name[..^"_action-plan.csv".Length];
-    if (!DateTime.TryParseExact(
-            timestampPart,
-            "yyyy-MM-dd_HHmm",
-            CultureInfo.InvariantCulture,
-            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
-            out DateTime freezeBoundUtc))
+    var plan = ActionPlanLoader.Load(latestPlanFile);
+    if (plan is null)
     {
-        Console.WriteLine($"FAILED: cannot read freeze bound from filename '{latestPlan.Name}'.");
+        Console.WriteLine($"FAILED: cannot read freeze bound from filename '{latestPlanFile.Name}'.");
         return;
     }
 
-    Console.WriteLine($"Freeze bound (UTC): {freezeBoundUtc:yyyy-MM-ddTHH:mm:ssZ}");
+    Console.WriteLine($"Plan file: {plan.FileName}");
+    Console.WriteLine($"Freeze bound (UTC): {plan.FreezeBoundUtc:yyyy-MM-ddTHH:mm:ssZ}");
 
-    List<ActionPlanRow> planRows;
-    using (var planReader = new StreamReader(latestPlan.FullName))
-    using (var planCsv = new CsvReader(planReader, CultureInfo.InvariantCulture))
-    {
-        planRows = planCsv.GetRecords<ActionPlanRow>().ToList();
-    }
-
-    var validation = ActionPlanValidator.Validate(planRows);
+    var validation = ActionPlanValidator.Validate(plan.Rows);
 
     Console.WriteLine($"Rows: {validation.TotalRows}");
     Console.WriteLine($"Marked for deletion: {validation.RowsMarkedForDeletion}");
@@ -133,8 +114,8 @@ if (args.Length > 0)
 {
     Console.WriteLine($"Unknown argument: {args[0]}");
     Console.WriteLine("Usage:");
-    Console.WriteLine("  dotnet run            discovery — full mailbox read");
-    Console.WriteLine("  dotnet run -- plan    generate action plan from newest report");
+    Console.WriteLine("  dotnet run              discovery — full mailbox read");
+    Console.WriteLine("  dotnet run -- plan      generate action plan from newest report");
     Console.WriteLine("  dotnet run -- validate  check the newest edited plan");
     return;
 }
