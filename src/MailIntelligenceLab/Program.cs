@@ -110,7 +110,7 @@ if (args.Length > 0 && args[0].Equals("validate", StringComparison.OrdinalIgnore
     return;
 }
 
-string[] knownVerbs = ["plan", "validate", "preview"];
+string[] knownVerbs = ["plan", "validate", "preview", "execute"];
 
 if (args.Length > 0 && !knownVerbs.Contains(args[0], StringComparer.OrdinalIgnoreCase))
 {
@@ -120,6 +120,7 @@ if (args.Length > 0 && !knownVerbs.Contains(args[0], StringComparer.OrdinalIgnor
     Console.WriteLine("  dotnet run -- plan      generate action plan from newest report");
     Console.WriteLine("  dotnet run -- validate  check the newest edited plan");
     Console.WriteLine("  dotnet run -- preview   resolve the newest plan against Graph (read-only)");
+    Console.WriteLine("  dotnet run -- execute <plan-file>  delete messages marked in that plan");
     return;
 }
 
@@ -160,13 +161,13 @@ var credential = new DeviceCodeCredential(credentialOptions);
 
 if (authRecord is null)
 {
-    var graphScope = new TokenRequestContext(new[] { "User.Read", "Mail.Read" });
+    var graphScope = new TokenRequestContext(new[] { "User.Read", "Mail.ReadWrite" });
     var newRecord = await credential.AuthenticateAsync(graphScope);
     using var writeStream = new FileStream(authRecordPath, FileMode.Create, FileAccess.Write);
     await newRecord.SerializeAsync(writeStream);
 }
 
-var graphClient = new GraphServiceClient(credential, new[] { "User.Read", "Mail.Read" });
+var graphClient = new GraphServiceClient(credential, new[] { "User.Read", "Mail.ReadWrite" });
 
 try
 {
@@ -258,6 +259,131 @@ if (args.Length > 0 && args[0].Equals("preview", StringComparison.OrdinalIgnoreC
     }
 
     Console.WriteLine("Preview only. No message has been modified or deleted.");
+    return;
+}
+
+if (args.Length > 0 && args[0].Equals("execute", StringComparison.OrdinalIgnoreCase))
+{
+    // Explicit path, not newest-by-default: this is the one verb where acting on
+    // a file you forgot you regenerated is unrecoverable.
+    if (args.Length < 2)
+    {
+        Console.WriteLine("Usage: dotnet run -- execute <path-to-plan-file>");
+        return;
+    }
+
+    var planFile = new FileInfo(Path.GetFullPath(args[1]));
+    if (!planFile.Exists)
+    {
+        Console.WriteLine($"Plan file not found: {planFile.FullName}");
+        return;
+    }
+
+    var plan = ActionPlanLoader.Load(planFile);
+    if (plan is null)
+    {
+        Console.WriteLine($"FAILED: cannot read freeze bound from filename '{planFile.Name}'.");
+        return;
+    }
+
+    var validation = ActionPlanValidator.Validate(plan.Rows);
+    if (!validation.IsValid)
+    {
+        Console.WriteLine($"FAILED with {validation.Errors.Count} error(s) — fix the plan before executing.");
+        foreach (string error in validation.Errors)
+        {
+            Console.WriteLine($"  - {error}");
+        }
+        return;
+    }
+
+    var markedRows = plan.Rows
+        .Where(row => (row.Action ?? string.Empty).Trim()
+            .Equals(ActionPlanGenerator.DeleteAction, StringComparison.OrdinalIgnoreCase))
+        .ToList();
+
+    if (markedRows.Count == 0)
+    {
+        Console.WriteLine("No row is marked for deletion — nothing to execute.");
+        return;
+    }
+
+    Console.WriteLine();
+    Console.WriteLine($"Plan file: {plan.FileName}");
+    Console.WriteLine($"Freeze bound (UTC): {plan.FreezeBoundUtc:yyyy-MM-ddTHH:mm:ssZ}");
+    Console.WriteLine($"Senders marked for deletion: {markedRows.Count}");
+    foreach (var row in markedRows)
+    {
+        Console.WriteLine($"  {row.SenderAddress} (plan: {row.MessageCount} messages)");
+    }
+
+    Console.WriteLine();
+    Console.WriteLine("Messages are moved to Deleted Items, not permanently erased.");
+    Console.WriteLine("Type DELETE to proceed, anything else to abort:");
+    Console.Write("> ");
+
+    string? confirmation = Console.ReadLine();
+    if (confirmation?.Trim() != "DELETE")
+    {
+        Console.WriteLine("Aborted. Nothing was deleted.");
+        return;
+    }
+
+    string logsFolder = Path.GetFullPath(config["ExecutionLogs:RawFolder"]!);
+    Directory.CreateDirectory(logsFolder);
+    string logPath = Path.Combine(
+        logsFolder,
+        $"{DateTime.UtcNow:yyyy-MM-dd_HHmm}_execution-log.csv");
+
+    Console.WriteLine();
+    Console.WriteLine($"Execution log: {logPath}");
+    Console.WriteLine();
+
+    var executionStopwatch = Stopwatch.StartNew();
+
+    // Opened for the whole run and flushed per row: a killed process still
+    // leaves an accurate record of what was actually deleted.
+    using (var logWriter = new StreamWriter(logPath, append: true))
+    using (var logCsv = new CsvWriter(logWriter, CultureInfo.InvariantCulture))
+    {
+        logCsv.WriteHeader<ExecutionLogRow>();
+        logCsv.NextRecord();
+        logCsv.Flush();
+
+        foreach (var row in markedRows)
+        {
+            Console.WriteLine($"{row.SenderAddress}...");
+
+            var summary = await PlanExecutor.ExecuteAsync(
+                graphClient,
+                row,
+                plan.FreezeBoundUtc,
+                plan.FileName,
+                logRow =>
+                {
+                    logCsv.WriteRecord(logRow);
+                    logCsv.NextRecord();
+                    logCsv.Flush();
+                });
+
+            Console.WriteLine(
+                $"  resolved {summary.Resolved}, deleted {summary.Deleted}, " +
+                $"already gone {summary.AlreadyGone}, failed {summary.Failed}");
+
+            if (summary.Aborted)
+            {
+                Console.WriteLine();
+                Console.WriteLine("ABORTED: too many consecutive failures. See the execution log.");
+                return;
+            }
+        }
+    }
+
+    executionStopwatch.Stop();
+
+    Console.WriteLine();
+    Console.WriteLine($"Elapsed: {executionStopwatch.Elapsed:mm\\:ss}");
+    Console.WriteLine("Done. Check Deleted Items before emptying it.");
     return;
 }
 
