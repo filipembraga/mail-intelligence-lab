@@ -110,13 +110,16 @@ if (args.Length > 0 && args[0].Equals("validate", StringComparison.OrdinalIgnore
     return;
 }
 
-if (args.Length > 0)
+string[] knownVerbs = ["plan", "validate", "preview"];
+
+if (args.Length > 0 && !knownVerbs.Contains(args[0], StringComparer.OrdinalIgnoreCase))
 {
     Console.WriteLine($"Unknown argument: {args[0]}");
     Console.WriteLine("Usage:");
     Console.WriteLine("  dotnet run              discovery — full mailbox read");
     Console.WriteLine("  dotnet run -- plan      generate action plan from newest report");
     Console.WriteLine("  dotnet run -- validate  check the newest edited plan");
+    Console.WriteLine("  dotnet run -- preview   resolve the newest plan against Graph (read-only)");
     return;
 }
 
@@ -174,6 +177,87 @@ catch (Exception ex)
 {
     Console.WriteLine($"ERROR calling Graph: {ex.Message}");
     Console.WriteLine(ex);
+    return;
+}
+
+if (args.Length > 0 && args[0].Equals("preview", StringComparison.OrdinalIgnoreCase))
+{
+    string plansFolder = Path.GetFullPath(config["Plans:RawFolder"]!);
+
+    var latestPlanFile = ActionPlanLoader.FindNewest(plansFolder);
+    if (latestPlanFile is null)
+    {
+        Console.WriteLine($"No action plan found in: {plansFolder}");
+        return;
+    }
+
+    var plan = ActionPlanLoader.Load(latestPlanFile);
+    if (plan is null)
+    {
+        Console.WriteLine($"FAILED: cannot read freeze bound from filename '{latestPlanFile.Name}'.");
+        return;
+    }
+
+    Console.WriteLine();
+    Console.WriteLine($"Plan file: {plan.FileName}");
+    Console.WriteLine($"Freeze bound (UTC): {plan.FreezeBoundUtc:yyyy-MM-ddTHH:mm:ssZ}");
+
+    var validation = ActionPlanValidator.Validate(plan.Rows);
+    if (!validation.IsValid)
+    {
+        Console.WriteLine();
+        Console.WriteLine($"FAILED with {validation.Errors.Count} error(s):");
+        foreach (string error in validation.Errors)
+        {
+            Console.WriteLine($"  - {error}");
+        }
+        return;
+    }
+
+    var markedRows = plan.Rows
+        .Where(row => (row.Action ?? string.Empty).Trim()
+            .Equals(ActionPlanGenerator.DeleteAction, StringComparison.OrdinalIgnoreCase))
+        .ToList();
+
+    if (markedRows.Count == 0)
+    {
+        Console.WriteLine("No row is marked for deletion — nothing to preview.");
+        return;
+    }
+
+    Console.WriteLine($"Resolving {markedRows.Count} sender(s) against Graph...");
+    Console.WriteLine();
+
+    var previewStopwatch = Stopwatch.StartNew();
+    var resolutions = await PlanResolver.ResolveAsync(graphClient, markedRows, plan.FreezeBoundUtc);
+    previewStopwatch.Stop();
+
+    foreach (var resolution in resolutions)
+    {
+        if (resolution.Error is not null)
+        {
+            Console.WriteLine($"  ERROR  {resolution.SenderAddress}: {resolution.Error}");
+            continue;
+        }
+
+        string drift = resolution.Drift == 0 ? "" : $"  (drift: {resolution.Drift:+#;-#;0})";
+        Console.WriteLine($"  {resolution.SenderAddress}: plan {resolution.PlannedMessageCount}, resolved {resolution.ResolvedMessageCount}{drift}");
+    }
+
+    int failedCount = resolutions.Count(r => r.Error is not null);
+    int totalResolved = resolutions.Where(r => r.Error is null).Sum(r => r.ResolvedMessageCount);
+
+    Console.WriteLine();
+    Console.WriteLine($"Elapsed: {previewStopwatch.Elapsed.TotalSeconds:N1}s");
+    Console.WriteLine($"Messages the plan would delete: {totalResolved} (plan claimed: {validation.MessagesTargeted})");
+
+    if (failedCount > 0)
+    {
+        Console.WriteLine($"{failedCount} sender(s) failed to resolve — not safe to execute.");
+        return;
+    }
+
+    Console.WriteLine("Preview only. No message has been modified or deleted.");
     return;
 }
 
