@@ -6,6 +6,7 @@ public static class ActionPlanGenerator
 {
     public const string KeepAction = "";
     public const string DeleteAction = "delete";
+    public const string PermanentDeleteAction = "permanent-delete";
 
     // A row is only useful if its address can be resolved by a Graph $filter.
     // "(unknown)" (null From) and LegacyExchangeDN values ("/o=...") cannot.

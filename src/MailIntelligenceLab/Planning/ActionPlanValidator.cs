@@ -31,7 +31,10 @@ public static class ActionPlanValidator
                 continue;
             }
 
-            if (!action.Equals(ActionPlanGenerator.DeleteAction, StringComparison.OrdinalIgnoreCase))
+            bool isDelete = action.Equals(ActionPlanGenerator.DeleteAction, StringComparison.OrdinalIgnoreCase);
+            bool isPermanentDelete = action.Equals(ActionPlanGenerator.PermanentDeleteAction, StringComparison.OrdinalIgnoreCase);
+
+            if (!isDelete && !isPermanentDelete)
             {
                 errors.Add($"Unrecognized action '{action}' for sender: {row.SenderAddress}");
                 continue;
@@ -50,6 +53,9 @@ public static class ActionPlanValidator
             Errors: errors,
             TotalRows: planRows.Count,
             RowsMarkedForDeletion: markedForDeletion.Count,
+            RowsMarkedForPermanentDeletion: markedForDeletion.Count(row =>
+                (row.Action ?? string.Empty).Trim()
+                    .Equals(ActionPlanGenerator.PermanentDeleteAction, StringComparison.OrdinalIgnoreCase)),
             MessagesTargeted: markedForDeletion.Sum(row => row.MessageCount),
             BytesTargeted: markedForDeletion.Sum(row => row.TotalAttachmentSizeBytes)
         );

@@ -88,7 +88,7 @@ if (args.Length > 0 && args[0].Equals("validate", StringComparison.OrdinalIgnore
     var validation = ActionPlanValidator.Validate(plan.Rows);
 
     Console.WriteLine($"Rows: {validation.TotalRows}");
-    Console.WriteLine($"Marked for deletion: {validation.RowsMarkedForDeletion}");
+    Console.WriteLine($"Marked for deletion: {validation.RowsMarkedForDeletion} (permanent: {validation.RowsMarkedForPermanentDeletion})");
     Console.WriteLine($"Messages targeted (per plan): {validation.MessagesTargeted}");
     Console.WriteLine($"Attachment weight targeted: {validation.BytesTargeted / 1024.0 / 1024.0:N1} MB");
 
@@ -216,8 +216,12 @@ if (args.Length > 0 && args[0].Equals("preview", StringComparison.OrdinalIgnoreC
     }
 
     var markedRows = plan.Rows
-        .Where(row => (row.Action ?? string.Empty).Trim()
-            .Equals(ActionPlanGenerator.DeleteAction, StringComparison.OrdinalIgnoreCase))
+        .Where(row =>
+        {
+            string action = (row.Action ?? string.Empty).Trim();
+            return action.Equals(ActionPlanGenerator.DeleteAction, StringComparison.OrdinalIgnoreCase)
+                || action.Equals(ActionPlanGenerator.PermanentDeleteAction, StringComparison.OrdinalIgnoreCase);
+        })
         .ToList();
 
     if (markedRows.Count == 0)
@@ -298,8 +302,12 @@ if (args.Length > 0 && args[0].Equals("execute", StringComparison.OrdinalIgnoreC
     }
 
     var markedRows = plan.Rows
-        .Where(row => (row.Action ?? string.Empty).Trim()
-            .Equals(ActionPlanGenerator.DeleteAction, StringComparison.OrdinalIgnoreCase))
+        .Where(row =>
+        {
+            string action = (row.Action ?? string.Empty).Trim();
+            return action.Equals(ActionPlanGenerator.DeleteAction, StringComparison.OrdinalIgnoreCase)
+                || action.Equals(ActionPlanGenerator.PermanentDeleteAction, StringComparison.OrdinalIgnoreCase);
+        })
         .ToList();
 
     if (markedRows.Count == 0)
@@ -312,18 +320,33 @@ if (args.Length > 0 && args[0].Equals("execute", StringComparison.OrdinalIgnoreC
     Console.WriteLine($"Plan file: {plan.FileName}");
     Console.WriteLine($"Freeze bound (UTC): {plan.FreezeBoundUtc:yyyy-MM-ddTHH:mm:ssZ}");
     Console.WriteLine($"Senders marked for deletion: {markedRows.Count}");
+
     foreach (var row in markedRows)
     {
-        Console.WriteLine($"  {row.SenderAddress} (plan: {row.MessageCount} messages)");
+        Console.WriteLine($"  [{(row.Action ?? string.Empty).Trim().ToLowerInvariant()}] {row.SenderAddress} (plan: {row.MessageCount} messages)");
     }
 
     Console.WriteLine();
-    Console.WriteLine("Messages are moved to Deleted Items, not permanently erased.");
-    Console.WriteLine("Type DELETE to proceed, anything else to abort:");
+
+    string expected;
+    if (validation.RowsMarkedForPermanentDeletion > 0)
+    {
+        expected = "PURGE";
+        Console.WriteLine($"{validation.RowsMarkedForPermanentDeletion} sender(s) marked 'permanent-delete':");
+        Console.WriteLine("  messages go to the Purges folder — NOT recoverable from Outlook.");
+        Console.WriteLine("Type PURGE to proceed, anything else to abort:");
+    }
+    else
+    {
+        expected = "DELETE";
+        Console.WriteLine("Messages are soft-deleted to Recoverable Items.");
+        Console.WriteLine("Recoverable via Outlook: Deleted Items > 'Recover items deleted from this folder'.");
+        Console.WriteLine("Type DELETE to proceed, anything else to abort:");
+    }
     Console.Write("> ");
 
     string? confirmation = Console.ReadLine();
-    if (confirmation?.Trim() != "DELETE")
+    if (confirmation?.Trim() != expected)
     {
         Console.WriteLine("Aborted. Nothing was deleted.");
         return;
@@ -383,7 +406,9 @@ if (args.Length > 0 && args[0].Equals("execute", StringComparison.OrdinalIgnoreC
 
     Console.WriteLine();
     Console.WriteLine($"Elapsed: {executionStopwatch.Elapsed:mm\\:ss}");
-    Console.WriteLine("Done. Check Deleted Items before emptying it.");
+    Console.WriteLine(validation.RowsMarkedForPermanentDeletion > 0
+        ? "Done. Purged messages are in Recoverable Items > Purges — not reachable from Outlook."
+        : "Done. Soft-deleted messages are recoverable via Outlook: Deleted Items > 'Recover items deleted from this folder'.");
     return;
 }
 

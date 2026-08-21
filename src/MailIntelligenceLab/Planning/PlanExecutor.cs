@@ -11,6 +11,7 @@ public static class PlanExecutor
     public const string OutcomeDeleted = "deleted";
     public const string OutcomeAlreadyGone = "already-gone";
     public const string OutcomeFailed = "failed";
+    public const string OutcomePurged = "purged";
 
     // Systemic failures (expired token, throttling) look like many individual
     // failures in a row. Independent failures are worth continuing through;
@@ -64,6 +65,9 @@ public static class PlanExecutor
         int consecutiveFailures = 0;
         bool aborted = false;
 
+        bool permanent = (row.Action ?? string.Empty).Trim()
+            .Equals(ActionPlanGenerator.PermanentDeleteAction, StringComparison.OrdinalIgnoreCase);
+
         foreach (string messageId in messageIds)
         {
             string outcome;
@@ -71,8 +75,16 @@ public static class PlanExecutor
 
             try
             {
-                await graphClient.Me.Messages[messageId].DeleteAsync();
-                outcome = OutcomeDeleted;
+                if (permanent)
+                {
+                    await graphClient.Me.Messages[messageId].PermanentDelete.PostAsync();
+                    outcome = OutcomePurged;
+                }
+                else
+                {
+                    await graphClient.Me.Messages[messageId].DeleteAsync();
+                    outcome = OutcomeDeleted;
+                }
                 deleted++;
                 consecutiveFailures = 0;
             }

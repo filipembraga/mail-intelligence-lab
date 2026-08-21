@@ -4,6 +4,7 @@ public record PlanValidationResult(
     IReadOnlyList<string> Errors,
     int TotalRows,
     int RowsMarkedForDeletion,
+    int RowsMarkedForPermanentDeletion,
     int MessagesTargeted,
     long BytesTargeted
 )
