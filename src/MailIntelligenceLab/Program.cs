@@ -110,7 +110,7 @@ if (args.Length > 0 && args[0].Equals("validate", StringComparison.OrdinalIgnore
     return;
 }
 
-string[] knownVerbs = ["plan", "validate", "preview", "execute"];
+string[] knownVerbs = ["plan", "validate", "preview", "execute", "verify"];
 
 if (args.Length > 0 && !knownVerbs.Contains(args[0], StringComparer.OrdinalIgnoreCase))
 {
@@ -121,6 +121,7 @@ if (args.Length > 0 && !knownVerbs.Contains(args[0], StringComparer.OrdinalIgnor
     Console.WriteLine("  dotnet run -- validate  check the newest edited plan");
     Console.WriteLine("  dotnet run -- preview   resolve the newest plan against Graph (read-only)");
     Console.WriteLine("  dotnet run -- execute <plan-file>  delete messages marked in that plan");
+    Console.WriteLine("  dotnet run -- verify <address>     count a sender's messages across mail folders");
     return;
 }
 
@@ -263,6 +264,32 @@ if (args.Length > 0 && args[0].Equals("preview", StringComparison.OrdinalIgnoreC
     }
 
     Console.WriteLine("Preview only. No message has been modified or deleted.");
+    return;
+}
+
+if (args.Length > 0 && args[0].Equals("verify", StringComparison.OrdinalIgnoreCase))
+{
+    if (args.Length < 2)
+    {
+        Console.WriteLine("Usage: dotnet run -- verify <sender-address>");
+        return;
+    }
+
+    string senderAddress = args[1];
+
+    Console.WriteLine();
+    Console.WriteLine($"Locating messages from: {senderAddress}");
+    Console.WriteLine();
+
+    var locations = await SenderLocator.LocateAsync(graphClient, senderAddress);
+
+    foreach (var (folder, count, error) in locations)
+    {
+        Console.WriteLine(error is null
+            ? $"  {folder,-28} {count}"
+            : $"  {folder,-28} ERROR — {error}");
+    }
+
     return;
 }
 
