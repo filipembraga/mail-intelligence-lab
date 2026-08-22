@@ -1,6 +1,6 @@
 # Timeline
 
-The complete dated history of this project, Phase 0 engineering through public release. This is deliberately more than a commit log — each entry includes why the milestone mattered or what it changed, not just what shipped. For the few moments worth a deeper story (bugs, pivots, a decision pulled forward under real pressure), see [How This Was Actually Built](README.md#how-this-was-actually-built) in the main README.
+The complete dated history of this project, from Phase 0 discovery through the first real cleanup in Phase 1. This is deliberately more than a commit log — each entry includes why the milestone mattered or what it changed, not just what shipped. For the few moments worth a deeper story (bugs, pivots, a decision pulled forward under real pressure), see [How This Was Actually Built](README.md#how-this-was-actually-built) in the main README.
 
 ---
 
@@ -35,3 +35,31 @@ The diagnostic finding above was tested cheaply first, against a 1,000-message s
 ### 2026-08-04 — Repository made public, documentation complete
 
 Phase 0 engineering closed Aug 1–2. After went into the README, the ADRs, and this timeline — written before the repo opened up, not after.
+
+### 2026-08-08 — `From` vs `Sender`: a verification query before Phase 1's first line
+
+Phase 1's executor needs to resolve a sender to its messages via a Graph `$filter`. Before writing that code, a single query in Graph Explorer checked whether the filter would agree with the Phase 0 report: for one university mailing list, Graph returned 721 messages and the report said 669. The cause was that Phase 0 aggregated on `sender` (the transmitting mailbox) while the natural filter targets `from` (the message author) — identical for ordinary mail, divergent on list and delegated sends. Phase 1 keys on `from`: it's what Outlook displays and what "this sender" means to someone deciding what to delete. Caught before a line of Phase 1 code existed, not after.
+
+### 2026-08-09 — Full re-read on the corrected key, and a locale bug that grep couldn't find
+
+A 27-minute re-read produced a report keyed on `from`: 64,833 messages, 2,655.8 MB of attachments, `cid:` hit rate unchanged at 98.4%. The same run surfaced a fourth instance of a language leak that had already been fixed three times in Phase 0 — console output reading `2.655,8 MB` and `63,0 req/s`. The words were English; the _numbers_ were still Brazilian, because `:N1` formats with the current culture. Invisible to a grep of the source, since the format string says nothing about locale. Fixed process-wide with a single `CultureInfo.DefaultThreadCurrentCulture` assignment.
+
+### 2026-08-10 — Action plan generator: Phase 1 opens
+
+The first Phase 1 commit reads the newest sender report and writes an editable plan file — one row per sender, one editable `Action` column, blank meaning keep. No Graph call, no write capability. Two design constraints came from outside the code: all numeric columns are emitted as integers, because a locale-aware spreadsheet parses `01.05` as a date and silently breaks sorting; and senders whose address can't be resolved by a Graph filter are excluded at generation rather than failing later.
+
+### 2026-08-12 — A validator written for typos finds 17 bugs in the aggregation
+
+The plan validator exists to catch hand-editing mistakes — duplicate rows, unrecognised actions. On its first run, against a plan file nobody had edited, it reported 17 duplicate senders. They weren't typos: Graph's `eq` on an email address is case-insensitive, but the report's `GroupBy` was not, so a mailbox sending with inconsistent header casing appeared as two rows that would resolve to the same messages. Normalisation was added to the plan generator rather than the report — the report stays a faithful record of what Graph returned, and every matching rule lives in the layer whose job is matching.
+
+### 2026-08-17 — Preview, then the first deletion in the project's history
+
+`preview` resolves each marked row against Graph and reports real count against planned count, writing nothing. It resolved four senders at 958 of 958, and one sender independently verified against Outlook. Only then did the executor ship. The first real run deleted 131 messages from a single dormant sender in 22 seconds, zero failures — a deliberately small, recoverable, independently verified target. The run before it aborted after 10 consecutive `ErrorAccessDenied` responses: the scope arrays had been updated in one of two places, so the cached credential still carried read-only scope. The circuit breaker stopped it at 10 attempts instead of 131 — the third variant of the same scope-mismatch bug class documented in [ADR-002](README.md#adr-002--authenticating-against-microsoft-graph-sdk-device-code-and-a-persisted-cache).
+
+### 2026-08-17 — Where deleted mail actually goes
+
+After the first successful deletion, the 131 messages were not in Deleted Items, not in the inbox, and not returned by an all-folders search. Three folder queries answered it: Graph's `DELETE` on a consumer mailbox is a soft delete into Recoverable Items → Deletions, bypassing Deleted Items entirely — the same destination as Shift+Delete, not the same as clicking the bin. Recoverable through Outlook's "Recover items deleted from this folder", and invisible everywhere else. A tool that deletes mail and cannot say where it went is incomplete, which is why this became the `verify` verb rather than a throwaway diagnostic.
+
+### 2026-08-21 — `permanent-delete`, and the first real cleanup
+
+Permanent deletion was added as a plan action value rather than a config flag: the destructive choice is recorded per row in the file being approved, printed in the confirmation, and written to the execution log — no invisible state can make a run unrecoverable. It requires typing `PURGE` rather than `DELETE`. Tested first on the same 131 messages, recovered and re-purged: `verify` confirmed 0 in Deletions and 131 in Purges, proving the two actions are genuinely different on a consumer mailbox. The full round then purged 4,144 messages across 21 senders in 11:37 with zero failures, including one sender already purged in the earlier test — resolved 0, acted 0, no error, demonstrating that re-running a plan is safe. Mailbox storage moved from 96% to 90% immediately, without waiting for any retention window.

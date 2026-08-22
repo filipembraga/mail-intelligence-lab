@@ -88,7 +88,7 @@ if (args.Length > 0 && args[0].Equals("validate", StringComparison.OrdinalIgnore
     var validation = ActionPlanValidator.Validate(plan.Rows);
 
     Console.WriteLine($"Rows: {validation.TotalRows}");
-    Console.WriteLine($"Marked for deletion: {validation.RowsMarkedForDeletion}");
+    Console.WriteLine($"Marked for deletion: {validation.RowsMarkedForDeletion} (permanent: {validation.RowsMarkedForPermanentDeletion})");
     Console.WriteLine($"Messages targeted (per plan): {validation.MessagesTargeted}");
     Console.WriteLine($"Attachment weight targeted: {validation.BytesTargeted / 1024.0 / 1024.0:N1} MB");
 
@@ -110,7 +110,7 @@ if (args.Length > 0 && args[0].Equals("validate", StringComparison.OrdinalIgnore
     return;
 }
 
-string[] knownVerbs = ["plan", "validate", "preview"];
+string[] knownVerbs = ["plan", "validate", "preview", "execute", "verify"];
 
 if (args.Length > 0 && !knownVerbs.Contains(args[0], StringComparer.OrdinalIgnoreCase))
 {
@@ -120,6 +120,8 @@ if (args.Length > 0 && !knownVerbs.Contains(args[0], StringComparer.OrdinalIgnor
     Console.WriteLine("  dotnet run -- plan      generate action plan from newest report");
     Console.WriteLine("  dotnet run -- validate  check the newest edited plan");
     Console.WriteLine("  dotnet run -- preview   resolve the newest plan against Graph (read-only)");
+    Console.WriteLine("  dotnet run -- execute <plan-file>  delete messages marked in that plan");
+    Console.WriteLine("  dotnet run -- verify <address>     count a sender's messages across mail folders");
     return;
 }
 
@@ -160,13 +162,13 @@ var credential = new DeviceCodeCredential(credentialOptions);
 
 if (authRecord is null)
 {
-    var graphScope = new TokenRequestContext(new[] { "User.Read", "Mail.Read" });
+    var graphScope = new TokenRequestContext(new[] { "User.Read", "Mail.ReadWrite" });
     var newRecord = await credential.AuthenticateAsync(graphScope);
     using var writeStream = new FileStream(authRecordPath, FileMode.Create, FileAccess.Write);
     await newRecord.SerializeAsync(writeStream);
 }
 
-var graphClient = new GraphServiceClient(credential, new[] { "User.Read", "Mail.Read" });
+var graphClient = new GraphServiceClient(credential, new[] { "User.Read", "Mail.ReadWrite" });
 
 try
 {
@@ -215,8 +217,12 @@ if (args.Length > 0 && args[0].Equals("preview", StringComparison.OrdinalIgnoreC
     }
 
     var markedRows = plan.Rows
-        .Where(row => (row.Action ?? string.Empty).Trim()
-            .Equals(ActionPlanGenerator.DeleteAction, StringComparison.OrdinalIgnoreCase))
+        .Where(row =>
+        {
+            string action = (row.Action ?? string.Empty).Trim();
+            return action.Equals(ActionPlanGenerator.DeleteAction, StringComparison.OrdinalIgnoreCase)
+                || action.Equals(ActionPlanGenerator.PermanentDeleteAction, StringComparison.OrdinalIgnoreCase);
+        })
         .ToList();
 
     if (markedRows.Count == 0)
@@ -258,6 +264,178 @@ if (args.Length > 0 && args[0].Equals("preview", StringComparison.OrdinalIgnoreC
     }
 
     Console.WriteLine("Preview only. No message has been modified or deleted.");
+    return;
+}
+
+if (args.Length > 0 && args[0].Equals("verify", StringComparison.OrdinalIgnoreCase))
+{
+    if (args.Length < 2)
+    {
+        Console.WriteLine("Usage: dotnet run -- verify <sender-address>");
+        return;
+    }
+
+    string senderAddress = args[1];
+
+    Console.WriteLine();
+    Console.WriteLine($"Locating messages from: {senderAddress}");
+    Console.WriteLine();
+
+    var locations = await SenderLocator.LocateAsync(graphClient, senderAddress);
+
+    foreach (var (folder, count, error) in locations)
+    {
+        Console.WriteLine(error is null
+            ? $"  {folder,-28} {count}"
+            : $"  {folder,-28} ERROR — {error}");
+    }
+
+    return;
+}
+
+if (args.Length > 0 && args[0].Equals("execute", StringComparison.OrdinalIgnoreCase))
+{
+    // Explicit path, not newest-by-default: this is the one verb where acting on
+    // a file you forgot you regenerated is unrecoverable.
+    if (args.Length < 2)
+    {
+        Console.WriteLine("Usage: dotnet run -- execute <path-to-plan-file>");
+        return;
+    }
+
+    var planFile = new FileInfo(Path.GetFullPath(args[1]));
+    if (!planFile.Exists)
+    {
+        Console.WriteLine($"Plan file not found: {planFile.FullName}");
+        return;
+    }
+
+    var plan = ActionPlanLoader.Load(planFile);
+    if (plan is null)
+    {
+        Console.WriteLine($"FAILED: cannot read freeze bound from filename '{planFile.Name}'.");
+        return;
+    }
+
+    var validation = ActionPlanValidator.Validate(plan.Rows);
+    if (!validation.IsValid)
+    {
+        Console.WriteLine($"FAILED with {validation.Errors.Count} error(s) — fix the plan before executing.");
+        foreach (string error in validation.Errors)
+        {
+            Console.WriteLine($"  - {error}");
+        }
+        return;
+    }
+
+    var markedRows = plan.Rows
+        .Where(row =>
+        {
+            string action = (row.Action ?? string.Empty).Trim();
+            return action.Equals(ActionPlanGenerator.DeleteAction, StringComparison.OrdinalIgnoreCase)
+                || action.Equals(ActionPlanGenerator.PermanentDeleteAction, StringComparison.OrdinalIgnoreCase);
+        })
+        .ToList();
+
+    if (markedRows.Count == 0)
+    {
+        Console.WriteLine("No row is marked for deletion — nothing to execute.");
+        return;
+    }
+
+    Console.WriteLine();
+    Console.WriteLine($"Plan file: {plan.FileName}");
+    Console.WriteLine($"Freeze bound (UTC): {plan.FreezeBoundUtc:yyyy-MM-ddTHH:mm:ssZ}");
+    Console.WriteLine($"Senders marked for deletion: {markedRows.Count}");
+
+    foreach (var row in markedRows)
+    {
+        Console.WriteLine($"  [{(row.Action ?? string.Empty).Trim().ToLowerInvariant()}] {row.SenderAddress} (plan: {row.MessageCount} messages)");
+    }
+
+    Console.WriteLine();
+
+    string expected;
+    if (validation.RowsMarkedForPermanentDeletion > 0)
+    {
+        expected = "PURGE";
+        Console.WriteLine($"{validation.RowsMarkedForPermanentDeletion} sender(s) marked 'permanent-delete':");
+        Console.WriteLine("  messages go to the Purges folder — NOT recoverable from Outlook.");
+        Console.WriteLine("Type PURGE to proceed, anything else to abort:");
+    }
+    else
+    {
+        expected = "DELETE";
+        Console.WriteLine("Messages are soft-deleted to Recoverable Items.");
+        Console.WriteLine("Recoverable via Outlook: Deleted Items > 'Recover items deleted from this folder'.");
+        Console.WriteLine("Type DELETE to proceed, anything else to abort:");
+    }
+    Console.Write("> ");
+
+    string? confirmation = Console.ReadLine();
+    if (confirmation?.Trim() != expected)
+    {
+        Console.WriteLine("Aborted. Nothing was deleted.");
+        return;
+    }
+
+    string logsFolder = Path.GetFullPath(config["ExecutionLogs:RawFolder"]!);
+    Directory.CreateDirectory(logsFolder);
+    string logPath = Path.Combine(
+        logsFolder,
+        $"{DateTime.UtcNow:yyyy-MM-dd_HHmm}_execution-log.csv");
+
+    Console.WriteLine();
+    Console.WriteLine($"Execution log: {logPath}");
+    Console.WriteLine();
+
+    var executionStopwatch = Stopwatch.StartNew();
+
+    // Opened for the whole run and flushed per row: a killed process still
+    // leaves an accurate record of what was actually deleted.
+    using (var logWriter = new StreamWriter(logPath, append: true))
+    using (var logCsv = new CsvWriter(logWriter, CultureInfo.InvariantCulture))
+    {
+        logCsv.WriteHeader<ExecutionLogRow>();
+        logCsv.NextRecord();
+        logCsv.Flush();
+
+        foreach (var row in markedRows)
+        {
+            Console.WriteLine($"{row.SenderAddress}...");
+
+            var summary = await PlanExecutor.ExecuteAsync(
+                graphClient,
+                row,
+                plan.FreezeBoundUtc,
+                plan.FileName,
+                logRow =>
+                {
+                    logCsv.WriteRecord(logRow);
+                    logCsv.NextRecord();
+                    logCsv.Flush();
+                });
+
+            Console.WriteLine(
+                $"  resolved {summary.Resolved}, deleted {summary.Deleted}, " +
+                $"already gone {summary.AlreadyGone}, failed {summary.Failed}");
+
+            if (summary.Aborted)
+            {
+                Console.WriteLine();
+                Console.WriteLine("ABORTED: too many consecutive failures. See the execution log.");
+                return;
+            }
+        }
+    }
+
+    executionStopwatch.Stop();
+
+    Console.WriteLine();
+    Console.WriteLine($"Elapsed: {executionStopwatch.Elapsed:mm\\:ss}");
+    Console.WriteLine(validation.RowsMarkedForPermanentDeletion > 0
+        ? "Done. Purged messages are in Recoverable Items > Purges — not reachable from Outlook."
+        : "Done. Soft-deleted messages are recoverable via Outlook: Deleted Items > 'Recover items deleted from this folder'.");
     return;
 }
 
