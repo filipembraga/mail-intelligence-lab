@@ -8,13 +8,15 @@ A local-first .NET console tool that reads and understands a real Outlook mailbo
 
 ## Snapshot
 
-| 🏗️ Architectural layers | 1, by design — see [Architecture](#architecture) |
-| 📋 ADRs documented | 4 |
-| ✅ Automated tests | 0 — see [Tests](#tests) |
-| 📨 Messages read (last full run) | 64,833 |
-| 📎 Attachment weight recoverable only via a heuristic | 733.8 MB (27.6%) — see [Results](#results) |
-| 🗑️ Messages purged (Phase 1, so far) | 5,023 across 40 senders, 0 failures |
-| 📉 Mailbox storage | 96% → 88% |
+|                                                       |                                                  |
+| ----------------------------------------------------- | ------------------------------------------------ |
+| 🏗️ Architectural layers                               | 1, by design — see [Architecture](#architecture) |
+| 📋 ADRs documented                                    | 4                                                |
+| ✅ Automated tests                                    | 0 — see [Tests](#tests)                          |
+| 📨 Messages read (last full run)                      | 64,833                                           |
+| 📎 Attachment weight recoverable only via a heuristic | 733.8 MB (27.6%) — see [Results](#results)       |
+| 🗑️ Messages purged (Phase 1, so far)                  | 5,023 across 40 senders, 0 failures              |
+| 📉 Mailbox storage                                    | 96% → 88%                                        |
 
 ---
 
@@ -269,14 +271,13 @@ It reports the message count for one sender across the inbox, Deleted Items, and
 
 ### Implemented
 
-| Mechanism                     | Implementation                                                                                                                                                                                                                                                                                                                                                                                                    |
-| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Automatic retry on throttling | The Graph SDK's own `RetryHandler` respects `Retry-After` on `429` responses and caps retries by attempt count and elapsed time — no custom retry policy written on top of it                                                                                                                                                                                                                                     |
-| Bounded concurrency           | Attachment fetches are limited to 4 concurrent requests via a shared `SemaphoreSlim(4)`, matching Microsoft's documented per-mailbox concurrency limit for Outlook resources — chosen over `Parallel.ForEachAsync` specifically because the limit belongs to the mailbox, not to any one loop, and a shared semaphore can be reused if a future phase runs a second concurrent operation against the same mailbox |
-| Per-message failure isolation | Each attachment fetch is wrapped in its own `try/catch`. A single failing request is logged and recorded as zero bytes for that message; it doesn't abort the other requests in flight                                                                                                                                                                                                                            |
-
+| Mechanism                           | Implementation                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Automatic retry on throttling       | The Graph SDK's own `RetryHandler` respects `Retry-After` on `429` responses and caps retries by attempt count and elapsed time — no custom retry policy written on top of it                                                                                                                                                                                                                                                                                                                                                                      |
+| Bounded concurrency                 | Attachment fetches are limited to 4 concurrent requests via a shared `SemaphoreSlim(4)`, matching Microsoft's documented per-mailbox concurrency limit for Outlook resources — chosen over `Parallel.ForEachAsync` specifically because the limit belongs to the mailbox, not to any one loop, and a shared semaphore can be reused if a future phase runs a second concurrent operation against the same mailbox                                                                                                                                  |
+| Per-message failure isolation       | Each attachment fetch is wrapped in its own `try/catch`. A single failing request is logged and recorded as zero bytes for that message; it doesn't abort the other requests in flight                                                                                                                                                                                                                                                                                                                                                             |
 | Consecutive-failure circuit breaker | The executor continues past individual failures — deletions are independent, and stopping doesn't undo what already succeeded — but aborts the run after 10 consecutive failures. Systemic problems (an expired token, throttling) present as many identical failures in a row, and pushing thousands more requests into one is worse than stopping. It fired on its first real outing: a scope array updated in one of two places left the cached credential read-only, and the run stopped after 10 `ErrorAccessDenied` responses instead of 131 |
-| Per-row log flush | The execution log is written and flushed per message, not buffered until the end. A killed process still leaves an accurate record of exactly what was deleted |
+| Per-row log flush                   | The execution log is written and flushed per message, not buffered until the end. A killed process still leaves an accurate record of exactly what was deleted                                                                                                                                                                                                                                                                                                                                                                                     |
 
 Across the full runs to date: **0 failures out of 7,093 attachment requests** at ~61–63 req/s, and **0 failures out of 5,023 delete requests** at ~0.17s each — both comfortably under the documented 10,000-request/10-minute ceiling (about 71% of it in the worst window measured).
 
