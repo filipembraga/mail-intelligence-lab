@@ -8,6 +8,16 @@ public static class ActionPlanGenerator
     public const string DeleteAction = "delete";
     public const string PermanentDeleteAction = "permanent-delete";
 
+    // Single source of truth for "does this cell mean act on this row?"
+    public static bool IsActionable(string? action) =>
+        Matches(action, DeleteAction) || Matches(action, PermanentDeleteAction);
+
+    public static bool IsPermanentDelete(string? action) =>
+        Matches(action, PermanentDeleteAction);
+
+    private static bool Matches(string? action, string expected) =>
+        (action ?? string.Empty).Trim().Equals(expected, StringComparison.OrdinalIgnoreCase);
+
     // A row is only useful if its address can be resolved by a Graph $filter.
     // "(unknown)" (null From) and LegacyExchangeDN values ("/o=...") cannot.
     public static bool IsResolvable(string? senderAddress) =>

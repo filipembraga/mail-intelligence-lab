@@ -217,12 +217,7 @@ if (args.Length > 0 && args[0].Equals("preview", StringComparison.OrdinalIgnoreC
     }
 
     var markedRows = plan.Rows
-        .Where(row =>
-        {
-            string action = (row.Action ?? string.Empty).Trim();
-            return action.Equals(ActionPlanGenerator.DeleteAction, StringComparison.OrdinalIgnoreCase)
-                || action.Equals(ActionPlanGenerator.PermanentDeleteAction, StringComparison.OrdinalIgnoreCase);
-        })
+        .Where(row => ActionPlanGenerator.IsActionable(row.Action))
         .ToList();
 
     if (markedRows.Count == 0)
@@ -329,12 +324,7 @@ if (args.Length > 0 && args[0].Equals("execute", StringComparison.OrdinalIgnoreC
     }
 
     var markedRows = plan.Rows
-        .Where(row =>
-        {
-            string action = (row.Action ?? string.Empty).Trim();
-            return action.Equals(ActionPlanGenerator.DeleteAction, StringComparison.OrdinalIgnoreCase)
-                || action.Equals(ActionPlanGenerator.PermanentDeleteAction, StringComparison.OrdinalIgnoreCase);
-        })
+        .Where(row => ActionPlanGenerator.IsActionable(row.Action))
         .ToList();
 
     if (markedRows.Count == 0)
