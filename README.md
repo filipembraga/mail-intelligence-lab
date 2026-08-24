@@ -12,7 +12,7 @@ A local-first .NET console tool that reads and understands a real Outlook mailbo
 | ----------------------------------------------------- | ------------------------------------------------ |
 | 🏗️ Architectural layers                               | 1, by design — see [Architecture](#architecture) |
 | 📋 ADRs documented                                    | 4                                                |
-| ✅ Automated tests                                    | 0 — see [Tests](#tests)                          |
+| ✅ Automated tests                                    | 37 — see [Tests](#tests)                         |
 | 📨 Messages read (last full run)                      | 64,833                                           |
 | 📎 Attachment weight recoverable only via a heuristic | 733.8 MB (27.6%) — see [Results](#results)       |
 | 🗑️ Messages purged (Phase 1, so far)                  | 5,023 across 40 senders, 0 failures              |
@@ -294,6 +294,9 @@ No client-side rate limiter exists yet, deliberately: measured throughput has st
 ## Project structure
 
 ```
+MailIntelligenceLab.sln
+
+src/MailIntelligenceLab/
 ├── Models/
 │   ├── EmailMetadata.cs        # per-message record: Id, sender, received date,
 │   │                           # hasAttachments, body length, cid: flag
@@ -310,6 +313,12 @@ No client-side rate limiter exists yet, deliberately: measured throughput has st
 ├── appsettings.json            # AzureAd, Discovery, Reports, Plans,
 │                               # ExecutionLogs, TokenCache config
 └── MailIntelligenceLab.csproj
+
+tests/MailIntelligenceLab.Tests/ # 37 tests over Planning/ — see Tests
+├── SenderReportRowBuilder.cs
+├── ActionPlanGeneratorTests.cs
+├── ActionPlanValidatorTests.cs
+└── MailIntelligenceLab.Tests.csproj
 
 docs/
 ├── reports/
@@ -348,6 +357,7 @@ No secret lives in this file — it's a public client, no client secret involved
 ### Running it
 
 ```bash
+cd src/MailIntelligenceLab
 dotnet run                          # discovery — full mailbox read, no writes
 dotnet run -- plan                  # newest report → editable action plan
 dotnet run -- validate              # check the edited plan, offline
@@ -387,7 +397,11 @@ Report saved to: docs/reports/raw/2026-01-01_1200_senders-report.csv
 
 ## Tests
 
-None yet, and this is now a gap rather than a justified absence. Phase 0's reasoning — discovery-only, no decision logic worth isolating — stopped applying the moment Phase 1 shipped. `ActionPlanGenerator.Generate`, `ActionPlanValidator.Validate` and `IsResolvable` are pure functions over in-memory records: they touch neither Graph nor the filesystem, and the case-merge and duplicate-detection rules in particular are exactly the kind of logic a unit test exists for. Next commit, not next phase.
+37 tests over `Planning/`, run with `dotnet test` from the repository root.
+
+What they cover is the decision logic and nothing else: `Generate` (case-merge, exclusion of senders no Graph filter can resolve, blank `Action`, message-count-weighted age averaging, ordering), `Validate` (duplicates, unrecognised actions, a marked sender that cannot be resolved, the marked/permanent counts), and the `IsActionable` / `IsPermanentDelete` / `IsResolvable` predicates. These are pure functions over in-memory records — no Graph, no filesystem — which is why they were the first thing worth testing and why they were testable at all.
+
+`PlanResolver`, `PlanExecutor` and `SenderLocator` are untested. Each is a thin loop around a Graph call, and testing them means either faking `GraphServiceClient` or running against a real mailbox. That's a real gap, deliberately not closed with a mock that would mostly assert that the SDK was called.
 
 ---
 
