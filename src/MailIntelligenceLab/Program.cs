@@ -42,7 +42,22 @@ if (args.Length > 0 && args[0].Equals("plan", StringComparison.OrdinalIgnoreCase
         reportRows = reportCsv.GetRecords<SenderReportRow>().ToList();
     }
 
-    var generation = ActionPlanGenerator.Generate(reportRows);
+    string logsFolderForPlan = Path.GetFullPath(config["ExecutionLogs:RawFolder"]!);
+    var executionLogRows = new List<ExecutionLogRow>();
+
+    if (Directory.Exists(logsFolderForPlan))
+    {
+        foreach (var logFile in new DirectoryInfo(logsFolderForPlan).GetFiles("*_execution-log.csv"))
+        {
+            using var logReader = new StreamReader(logFile.FullName);
+            using var logCsvReader = new CsvReader(logReader, CultureInfo.InvariantCulture);
+            executionLogRows.AddRange(logCsvReader.GetRecords<ExecutionLogRow>().ToList());
+        }
+    }
+
+    var alreadyRemovedBySender = ExecutionLogAggregator.CountRemovedPerSender(executionLogRows);
+
+    var generation = ActionPlanGenerator.Generate(reportRows, alreadyRemovedBySender);
 
     Directory.CreateDirectory(plansFolder);
 
@@ -58,9 +73,10 @@ if (args.Length > 0 && args[0].Equals("plan", StringComparison.OrdinalIgnoreCase
     }
 
     Console.WriteLine($"Senders in report: {reportRows.Count}");
-    Console.WriteLine($"Senders in plan: {generation.Rows.Count} (merged by case: {generation.MergedByCase}, excluded as unresolvable: {generation.ExcludedAsUnresolvable})");
+    Console.WriteLine($"Execution log rows read: {executionLogRows.Count} (from {logsFolderForPlan})");
+    Console.WriteLine($"Senders in plan: {generation.Rows.Count} (merged by case: {generation.MergedByCase}, excluded as unresolvable: {generation.ExcludedAsUnresolvable}, fully removed by prior rounds: {generation.ExcludedAsFullyRemoved})");
     Console.WriteLine($"Action plan saved to: {planPath}");
-    Console.WriteLine("Edit the Action column ('delete' to act, blank to keep), then run the executor.");
+    Console.WriteLine("Edit the Action column ('delete' to act, blank to keep, 'permanent-delete' to act without recovery), then run the executor.");
     return;
 }
 

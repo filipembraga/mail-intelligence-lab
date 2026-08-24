@@ -148,4 +148,80 @@ public class ActionPlanGeneratorTests
 
         Assert.Equal("big@example.com", result.Rows[0].SenderAddress);
     }
+
+    [Fact]
+    public void Generate_with_no_removal_data_behaves_as_before()
+    {
+        var report = new[]
+        {
+            new SenderReportRowBuilder().From("someone@example.com").WithMessageCount(50).Build()
+        };
+
+        var result = ActionPlanGenerator.Generate(report);
+
+        Assert.Equal(50, Assert.Single(result.Rows).MessageCount);
+        Assert.Equal(0, result.ExcludedAsFullyRemoved);
+    }
+
+    [Fact]
+    public void Generate_subtracts_already_removed_messages()
+    {
+        var report = new[]
+        {
+            new SenderReportRowBuilder().From("someone@example.com").WithMessageCount(50).Build()
+        };
+        var alreadyRemoved = new Dictionary<string, int> { ["someone@example.com"] = 30 };
+
+        var result = ActionPlanGenerator.Generate(report, alreadyRemoved);
+
+        Assert.Equal(20, Assert.Single(result.Rows).MessageCount);
+    }
+
+    [Fact]
+    public void Generate_excludes_a_sender_fully_removed_by_prior_rounds()
+    {
+        var report = new[]
+        {
+            new SenderReportRowBuilder().From("done@example.com").WithMessageCount(131).Build(),
+            new SenderReportRowBuilder().From("open@example.com").WithMessageCount(10).Build()
+        };
+        var alreadyRemoved = new Dictionary<string, int> { ["done@example.com"] = 131 };
+
+        var result = ActionPlanGenerator.Generate(report, alreadyRemoved);
+
+        Assert.Equal(1, result.ExcludedAsFullyRemoved);
+        Assert.Equal("open@example.com", Assert.Single(result.Rows).SenderAddress);
+    }
+
+    [Fact]
+    public void Generate_excludes_a_sender_over_removed_by_a_stale_report()
+    {
+        var report = new[]
+        {
+            new SenderReportRowBuilder().From("someone@example.com").WithMessageCount(10).Build()
+        };
+        var alreadyRemoved = new Dictionary<string, int> { ["someone@example.com"] = 15 };
+
+        var result = ActionPlanGenerator.Generate(report, alreadyRemoved);
+
+        Assert.Equal(1, result.ExcludedAsFullyRemoved);
+        Assert.Empty(result.Rows);
+    }
+
+    [Fact]
+    public void Generate_matches_removal_data_case_insensitively()
+    {
+        var report = new[]
+        {
+            new SenderReportRowBuilder().From("Someone@Example.com").WithMessageCount(50).Build()
+        };
+        var alreadyRemoved = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["someone@example.com"] = 20
+        };
+
+        var result = ActionPlanGenerator.Generate(report, alreadyRemoved);
+
+        Assert.Equal(30, Assert.Single(result.Rows).MessageCount);
+    }
 }

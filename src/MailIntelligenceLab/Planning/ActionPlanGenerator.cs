@@ -25,8 +25,11 @@ public static class ActionPlanGenerator
         && senderAddress.Contains('@')
         && !senderAddress.StartsWith("/o=", StringComparison.OrdinalIgnoreCase);
 
-    public static PlanGenerationResult Generate(IEnumerable<SenderReportRow> reportRows)
+    public static PlanGenerationResult Generate(
+        IEnumerable<SenderReportRow> reportRows,
+        IReadOnlyDictionary<string, int>? alreadyRemovedBySender = null)
     {
+        var removed = alreadyRemovedBySender ?? new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         var resolvable = reportRows.Where(row => IsResolvable(row.SenderAddress)).ToList();
         int excludedCount = reportRows.Count() - resolvable.Count;
 
@@ -40,45 +43,52 @@ public static class ActionPlanGenerator
 
         int mergedCount = resolvable.Count - groups.Count;
 
-        var planRows = groups
+        var candidates = groups
             .Select(group =>
             {
-                // The lowercase form is the one Graph echoes back and the one that
-                // reads consistently in a hand-sorted file; casing carries no meaning.
                 string canonicalAddress = group.Key.ToLowerInvariant();
-
                 int messageCount = group.Sum(row => row.MessageCount);
                 long attachmentBytes = group.Sum(row => row.TotalAttachmentSizeBytes);
 
-                // Weighted by message count: averaging two averages is wrong when one
-                // row has 400 messages and the other has 3.
                 double weightedAgeYears = messageCount == 0
                     ? 0
                     : group.Sum(row => row.AverageAgeYears * row.MessageCount) / messageCount;
 
-                return new ActionPlanRow(
+                int adjustedMessageCount = messageCount - removed.GetValueOrDefault(canonicalAddress, 0);
+
+                var row = new ActionPlanRow(
                     SenderAddress: canonicalAddress,
-                    SenderName: group.OrderByDescending(row => row.MessageCount).First().SenderName,
-                    MessageCount: messageCount,
-                    MessagesWithAttachmentsCount: group.Sum(row => row.MessagesWithAttachmentsCount),
-                    AttachmentFileCount: group.Sum(row => row.AttachmentFileCount),
+                    SenderName: group.OrderByDescending(r => r.MessageCount).First().SenderName,
+                    MessageCount: adjustedMessageCount,
+                    MessagesWithAttachmentsCount: group.Sum(r => r.MessagesWithAttachmentsCount),
+                    AttachmentFileCount: group.Sum(r => r.AttachmentFileCount),
                     TotalAttachmentSizeMB: (long)Math.Round(attachmentBytes / 1024.0 / 1024.0),
                     TotalAttachmentSizeBytes: attachmentBytes,
                     AverageAgeYears: (int)Math.Round(weightedAgeYears),
-                    OldestReceivedDate: group.Min(row => row.OldestReceivedDate)!,
-                    NewestReceivedDate: group.Max(row => row.NewestReceivedDate)!,
+                    OldestReceivedDate: group.Min(r => r.OldestReceivedDate)!,
+                    NewestReceivedDate: group.Max(r => r.NewestReceivedDate)!,
                     Action: KeepAction);
+
+                return (Row: row, FullyRemoved: adjustedMessageCount <= 0);
             })
+            .ToList();
+
+        int excludedAsFullyRemoved = candidates.Count(c => c.FullyRemoved);
+
+        var planRows = candidates
+            .Where(c => !c.FullyRemoved)
+            .Select(c => c.Row)
             .OrderByDescending(row => row.TotalAttachmentSizeBytes)
             .ThenByDescending(row => row.MessageCount)
             .ToList();
 
-        return new PlanGenerationResult(planRows, excludedCount, mergedCount);
+        return new PlanGenerationResult(planRows, excludedCount, mergedCount, excludedAsFullyRemoved);
     }
 }
 
 public record PlanGenerationResult(
     IReadOnlyList<ActionPlanRow> Rows,
     int ExcludedAsUnresolvable,
-    int MergedByCase
+    int MergedByCase,
+    int ExcludedAsFullyRemoved = 0
 );
