@@ -2,7 +2,7 @@
 
 A local-first .NET console tool that reads and understands a real Outlook mailbox via the Microsoft Graph API — before deciding what, if anything, to clean up.
 
-> This is a personal engineering lab, not a product. Phase 0 (Discovery) is complete and Phase 1 (Bulk cleanup) is in progress: authentication, full metadata read, real attachment sizing, and a plan-driven deletion workflow that has removed 5,023 messages so far from a real 20+ year old mailbox. Every deletion this tool performs requires a plan file, an explicit confirmation typed at the prompt, and leaves an append-only log — see [What deletion actually does](#what-deletion-actually-does).
+> This is a personal engineering lab, not a product. Phase 0 (Discovery) is complete and Phase 1 (Bulk cleanup) is in progress: authentication, full metadata read, real attachment sizing, and a plan-driven deletion workflow that has removed 47,221 messages so far from a real 20+ year old mailbox. Every deletion this tool performs requires a plan file, an explicit confirmation typed at the prompt, and leaves an append-only log — see [What deletion actually does](#what-deletion-actually-does).
 
 ---
 
@@ -15,8 +15,8 @@ A local-first .NET console tool that reads and understands a real Outlook mailbo
 | ✅ Automated tests                                    | 37 — see [Tests](#tests)                         |
 | 📨 Messages read (last full run)                      | 64,833                                           |
 | 📎 Attachment weight recoverable only via a heuristic | 733.8 MB (27.6%) — see [Results](#results)       |
-| 🗑️ Messages purged (Phase 1, so far)                  | 5,023 across 40 senders, 0 failures              |
-| 📉 Mailbox storage                                    | 96% → 88%                                        |
+| 🗑️ Messages purged (Phase 1, so far)                  | 47,221 across 750 senders, 10 failures           |
+| 📉 Mailbox storage                                    | 96% → 70%                                        |
 
 ---
 
@@ -214,7 +214,7 @@ No destructive operation runs without a generated plan file, edited by hand, val
 
 **Consequences**
 
-- The plan file is a reviewable, diffable artifact of intent, separate from the record of what happened — three rounds, 5,023 messages, 0 failures
+- The plan file is a reviewable, diffable artifact of intent, separate from the record of what happened — nine rounds, 47,221 messages, 10 failures
 - Validation rejects the whole file rather than skipping bad rows: a partially-executed plan would leave the mailbox in a state neither the plan nor the log fully describes
 - Re-running a plan is safe: senders already purged resolve to zero and no-op, demonstrated in rounds 2 and 3
 - Failures continue rather than abort, each logged individually, with a circuit breaker at 10 consecutive failures — independent failures are worth pushing through, a repeated one means something changed since `preview`
@@ -279,7 +279,7 @@ It reports the message count for one sender across the inbox, Deleted Items, and
 | Consecutive-failure circuit breaker | The executor continues past individual failures — deletions are independent, and stopping doesn't undo what already succeeded — but aborts the run after 10 consecutive failures. Systemic problems (an expired token, throttling) present as many identical failures in a row, and pushing thousands more requests into one is worse than stopping. It fired on its first real outing: a scope array updated in one of two places left the cached credential read-only, and the run stopped after 10 `ErrorAccessDenied` responses instead of 131 |
 | Per-row log flush                   | The execution log is written and flushed per message, not buffered until the end. A killed process still leaves an accurate record of exactly what was deleted                                                                                                                                                                                                                                                                                                                                                                                     |
 
-Across the full runs to date: **0 failures out of 7,093 attachment requests** at ~61–63 req/s, and **0 failures out of 5,023 delete requests** at ~0.17s each — both comfortably under the documented 10,000-request/10-minute ceiling (about 71% of it in the worst window measured).
+Across the full runs to date: **0 failures out of 7,093 attachment requests** at ~61–63 req/s, and **10 failures out of 47,231 delete requests** — all ten in the single aborted run that first proved the circuit breaker (see above) — both comfortably under the documented 10,000-request/10-minute ceiling.
 
 Deletion runs sequentially, deliberately. `preview` measured ~0.4s per sender and execution ~0.17s per message, which puts a 4,000-message round at about 11 minutes — tolerable, and a sequential loop is the only shape in which "10 consecutive failures" is a well-defined condition. Under four concurrent requests, consecutive has no meaning.
 
@@ -435,17 +435,17 @@ These are the numbers Phase 0 closed on and are kept as a record. A later re-rea
 
 | Metric           | Value       |
 | ---------------- | ----------- |
-| Rounds executed  | 3 (ongoing) |
-| Senders acted on | 40          |
-| Messages purged  | 5,023       |
-| Failures         | 0           |
-| Mailbox storage  | 96% → 88%   |
+| Rounds executed  | 9 (ongoing) |
+| Senders acted on | 750         |
+| Messages purged  | 47,221      |
+| Failures         | 10          |
+| Mailbox storage  | 96% → 70%   |
 
-The first destructive run was deliberately small: 131 messages from a single sender dormant since 2014, whose count had been independently verified in Outlook, using the recoverable `delete` action. Only after `verify` confirmed where those messages had landed — and after recovering and re-purging them to prove `permanent-delete` behaved differently — did a round of 4,144 messages run.
+The first destructive run was deliberately small: 131 messages from a single sender dormant since 2014, whose count had been independently verified in Outlook, using the recoverable `delete` action. Only after `verify` confirmed where those messages had landed — and after recovering and re-purging them to prove `permanent-delete` behaved differently — did larger rounds run.
 
-Phase 1 is not finished. Each round so far has needed a fresh ~27-minute discovery run, because the report is immutable and has no idea what previous rounds removed — the next step is deriving each plan from the latest report minus what the execution logs already record as purged. Returns are also diminishing: sorting by attachment weight found the large offenders quickly, and the remaining ones are better found by message count than by megabytes.
+Sorting by attachment weight found the large offenders quickly, but returns diminished fast — the remaining senders skewed toward high message count and low individual size. `feat: derive plan from report minus prior execution logs` removed the need for a fresh ~27-minute discovery run before every round, and switching the sort key to message count surfaced a different, much larger set of senders: mailing lists and newsletters that barely register in storage terms but account for most of the mailbox's message volume — one round alone purged over 34,000 messages while moving mailbox storage by only two percentage points.
 
-Storage moved the moment the purge completed, without waiting for any retention window. Note that the freed space is smaller than the 787 MB of attachment weight the plan targeted; the storage counter is a combined consumer allowance shown to one decimal place, so this comparison is indicative rather than exact.
+Storage moved the moment each purge completed, without waiting for any retention window, across every round. 10 messages failed across the whole project to date — each logged individually, none aborting a round beyond the deliberate circuit-breaker test.
 
 ---
 
