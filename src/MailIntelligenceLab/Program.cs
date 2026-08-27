@@ -126,7 +126,7 @@ if (args.Length > 0 && args[0].Equals("validate", StringComparison.OrdinalIgnore
     return;
 }
 
-string[] knownVerbs = ["plan", "validate", "preview", "execute", "verify"];
+string[] knownVerbs = ["plan", "validate", "preview", "execute", "verify", "inspect"];
 
 if (args.Length > 0 && !knownVerbs.Contains(args[0], StringComparer.OrdinalIgnoreCase))
 {
@@ -138,6 +138,7 @@ if (args.Length > 0 && !knownVerbs.Contains(args[0], StringComparer.OrdinalIgnor
     Console.WriteLine("  dotnet run -- preview   resolve the newest plan against Graph (read-only)");
     Console.WriteLine("  dotnet run -- execute <plan-file>  delete messages marked in that plan");
     Console.WriteLine("  dotnet run -- verify <address>     count a sender's messages across mail folders");
+    Console.WriteLine("  dotnet run -- inspect <address> [--all]   list a sender's messages in the inbox");
     return;
 }
 
@@ -299,6 +300,39 @@ if (args.Length > 0 && args[0].Equals("verify", StringComparison.OrdinalIgnoreCa
         Console.WriteLine(error is null
             ? $"  {folder,-28} {count}"
             : $"  {folder,-28} ERROR — {error}");
+    }
+
+    return;
+}
+
+if (args.Length > 0 && args[0].Equals("inspect", StringComparison.OrdinalIgnoreCase))
+{
+    if (args.Length < 2)
+    {
+        Console.WriteLine("Usage: dotnet run -- inspect <sender-address> [--all]");
+        return;
+    }
+
+    string senderAddress = args[1];
+    bool showAll = args.Contains("--all", StringComparer.OrdinalIgnoreCase);
+
+    var messages = await MessageInspector.InspectAsync(graphClient, senderAddress);
+
+    var toShow = showAll ? messages : messages.Take(15).ToList();
+
+    Console.WriteLine();
+    Console.WriteLine($"{senderAddress}: {messages.Count} message(s) in the inbox");
+    if (!showAll && messages.Count > 15)
+    {
+        Console.WriteLine($"Showing the 15 most recent. Use --all to see all {messages.Count}.");
+    }
+    Console.WriteLine();
+
+    foreach (var message in toShow)
+    {
+        string date = message.ReceivedDateTime?.ToString("yyyy-MM-dd") ?? "(unknown date)";
+        string attachment = message.HasAttachments ? "[attachment]" : "";
+        Console.WriteLine($"  {date}  {message.Subject}  {attachment}");
     }
 
     return;
