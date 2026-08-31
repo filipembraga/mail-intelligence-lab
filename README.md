@@ -296,7 +296,7 @@ No client-side rate limiter exists yet, deliberately: measured throughput has st
 ```
 MailIntelligenceLab.sln
 
-src/MailIntelligenceLab/
+src/MailIntelligenceLab.Console/
 ├── Models/
 │   ├── EmailMetadata.cs        # per-message record: Id, sender, received date,
 │   │                           # hasAttachments, body length, cid: flag
@@ -357,7 +357,7 @@ No secret lives in this file — it's a public client, no client secret involved
 ### Running it
 
 ```bash
-cd src/MailIntelligenceLab
+cd src/MailIntelligenceLab.Console
 dotnet run                          # discovery — full mailbox read, no writes
 dotnet run -- plan                  # newest report → editable action plan
 dotnet run -- validate              # check the edited plan, offline
