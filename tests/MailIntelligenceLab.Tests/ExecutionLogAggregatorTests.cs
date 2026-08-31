@@ -19,9 +19,9 @@ public class ExecutionLogAggregatorTests
     {
         var logs = new[]
         {
-            Log("a@example.com", PlanExecutor.OutcomeDeleted),
-            Log("a@example.com", PlanExecutor.OutcomePurged),
-            Log("a@example.com", PlanExecutor.OutcomeAlreadyGone),
+            Log("a@example.com", ExecutionOutcomes.Deleted),
+            Log("a@example.com", ExecutionOutcomes.Purged),
+            Log("a@example.com", ExecutionOutcomes.AlreadyGone),
         };
 
         var result = ExecutionLogAggregator.CountRemovedPerSender(logs);
@@ -34,8 +34,8 @@ public class ExecutionLogAggregatorTests
     {
         var logs = new[]
         {
-            Log("a@example.com", PlanExecutor.OutcomeDeleted),
-            Log("a@example.com", PlanExecutor.OutcomeFailed),
+            Log("a@example.com", ExecutionOutcomes.Deleted),
+            Log("a@example.com", ExecutionOutcomes.Failed),
         };
 
         var result = ExecutionLogAggregator.CountRemovedPerSender(logs);
@@ -48,8 +48,8 @@ public class ExecutionLogAggregatorTests
     {
         var logs = new[]
         {
-            Log("Someone@Example.com", PlanExecutor.OutcomeDeleted),
-            Log("someone@example.com", PlanExecutor.OutcomeDeleted),
+            Log("Someone@Example.com", ExecutionOutcomes.Deleted),
+            Log("someone@example.com", ExecutionOutcomes.Deleted),
         };
 
         var result = ExecutionLogAggregator.CountRemovedPerSender(logs);

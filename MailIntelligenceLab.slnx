@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/src/">
-    <Project Path="src/MailIntelligenceLab/MailIntelligenceLab.csproj" />
+    <Project Path="src/MailIntelligenceLab.Console/MailIntelligenceLab.Console.csproj" />
+    <Project Path="src/MailIntelligenceLab.Core/MailIntelligenceLab.Core.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/MailIntelligenceLab.Tests/MailIntelligenceLab.Tests.csproj" />

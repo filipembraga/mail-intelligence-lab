@@ -8,11 +8,6 @@ namespace MailIntelligenceLab.Planning;
 
 public static class PlanExecutor
 {
-    public const string OutcomeDeleted = "deleted";
-    public const string OutcomeAlreadyGone = "already-gone";
-    public const string OutcomeFailed = "failed";
-    public const string OutcomePurged = "purged";
-
     // Systemic failures (expired token, throttling) look like many individual
     // failures in a row. Independent failures are worth continuing through;
     // a repeated one means something changed since preview and isn't worth
@@ -78,12 +73,12 @@ public static class PlanExecutor
                 if (permanent)
                 {
                     await graphClient.Me.Messages[messageId].PermanentDelete.PostAsync();
-                    outcome = OutcomePurged;
+                    outcome = ExecutionOutcomes.Purged;
                 }
                 else
                 {
                     await graphClient.Me.Messages[messageId].DeleteAsync();
-                    outcome = OutcomeDeleted;
+                    outcome = ExecutionOutcomes.Deleted;
                 }
                 deleted++;
                 consecutiveFailures = 0;
@@ -91,13 +86,13 @@ public static class PlanExecutor
             catch (ODataError odataError) when (odataError.ResponseStatusCode == 404)
             {
                 // The desired state was already reached — not a failure.
-                outcome = OutcomeAlreadyGone;
+                outcome = ExecutionOutcomes.AlreadyGone;
                 alreadyGone++;
                 consecutiveFailures = 0;
             }
             catch (Exception ex) when (ex is ODataError or ApiException)
             {
-                outcome = OutcomeFailed;
+                outcome = ExecutionOutcomes.Failed;
                 error = ex is ODataError odata
                     ? $"{odata.Error?.Code}: {odata.Error?.Message}"
                     : ex.Message;

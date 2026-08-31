@@ -20,6 +20,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\MailIntelligenceLab\MailIntelligenceLab.csproj" />
+    <ProjectReference Include="..\..\src\MailIntelligenceLab.Core\MailIntelligenceLab.Core.csproj" />
   </ItemGroup>
 
 </Project>

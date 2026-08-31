@@ -6,9 +6,9 @@ public static class ExecutionLogAggregator
 {
     private static readonly HashSet<string> RemovedOutcomes = new(StringComparer.OrdinalIgnoreCase)
     {
-        PlanExecutor.OutcomeDeleted,
-        PlanExecutor.OutcomePurged,
-        PlanExecutor.OutcomeAlreadyGone
+        ExecutionOutcomes.Deleted,
+        ExecutionOutcomes.Purged,
+        ExecutionOutcomes.AlreadyGone
     };
 
     // "Removed" means the message left the inbox — deleted (soft, recoverable),
