@@ -1,5 +1,7 @@
 using Microsoft.Graph;
 using Microsoft.Graph.Models;
+using Microsoft.Graph.Models.ODataErrors;
+using Microsoft.Kiota.Abstractions;
 using MailIntelligenceLab.Models;
 using MailIntelligenceLab.Ports;
 
@@ -108,11 +110,33 @@ public sealed class GraphEmailProvider(GraphServiceClient graphClient) : IEmailP
         return summaries;
     }
 
-    public Task DeleteMessageAsync(string messageId) =>
-        graphClient.Me.Messages[messageId].DeleteAsync();
+    public Task<DeleteResult> DeleteMessageAsync(string messageId) =>
+    ExecuteDeleteAsync(() => graphClient.Me.Messages[messageId].DeleteAsync());
 
-    public Task PermanentDeleteMessageAsync(string messageId) =>
-        graphClient.Me.Messages[messageId].PermanentDelete.PostAsync();
+    public Task<DeleteResult> PermanentDeleteMessageAsync(string messageId) =>
+        ExecuteDeleteAsync(() => graphClient.Me.Messages[messageId].PermanentDelete.PostAsync());
+
+    // 404 means the desired state was already reached, not a failure — same
+    // distinction PlanExecutor made before this logic moved here.
+    private static async Task<DeleteResult> ExecuteDeleteAsync(Func<Task> deleteCall)
+    {
+        try
+        {
+            await deleteCall();
+            return new DeleteResult(DeleteOutcome.Deleted);
+        }
+        catch (ODataError odataError) when (odataError.ResponseStatusCode == 404)
+        {
+            return new DeleteResult(DeleteOutcome.AlreadyGone);
+        }
+        catch (Exception ex) when (ex is ODataError or ApiException)
+        {
+            string error = ex is ODataError odata
+                ? $"{odata.Error?.Code}: {odata.Error?.Message}"
+                : ex.Message;
+            return new DeleteResult(DeleteOutcome.Failed, error);
+        }
+    }
 
     private static string BuildSenderFilter(string senderAddress, DateTime? receivedOnOrBeforeUtc)
     {

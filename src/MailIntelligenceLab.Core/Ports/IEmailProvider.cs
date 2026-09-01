@@ -19,8 +19,12 @@ public interface IEmailProvider
     Task<IReadOnlyList<MessageSummary>> ListFromSenderAsync(
         string folderId, string senderAddress, DateTime? receivedOnOrBeforeUtc = null);
 
-    Task DeleteMessageAsync(string messageId);
-    Task PermanentDeleteMessageAsync(string messageId);
+    Task<DeleteResult> DeleteMessageAsync(string messageId);
+    Task<DeleteResult> PermanentDeleteMessageAsync(string messageId);
 }
 
 public record MessageSummary(string Id, string? Subject, DateTimeOffset? ReceivedDateTime, bool HasAttachments);
+
+public enum DeleteOutcome { Deleted, AlreadyGone, Failed }
+
+public record DeleteResult(DeleteOutcome Outcome, string? Error = null);
