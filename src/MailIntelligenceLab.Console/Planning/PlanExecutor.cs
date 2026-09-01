@@ -1,58 +1,22 @@
-using Microsoft.Graph;
-using Microsoft.Graph.Models;
-using Microsoft.Graph.Models.ODataErrors;
-using Microsoft.Kiota.Abstractions;
 using MailIntelligenceLab.Models;
+using MailIntelligenceLab.Ports;
 
 namespace MailIntelligenceLab.Planning;
 
-public static class PlanExecutor
+public sealed class PlanExecutor(IEmailProvider emailProvider)
 {
     // Systemic failures (expired token, throttling) look like many individual
     // failures in a row. Independent failures are worth continuing through;
-    // a repeated one means something changed since preview and isn't worth
-    // pushing a lot more requests into.
+    // a repeated one means something changed since preview.
     private const int ConsecutiveFailureLimit = 10;
 
-    public static async Task<ExecutionSummary> ExecuteAsync(
-        GraphServiceClient graphClient,
+    public async Task<ExecutionSummary> ExecuteAsync(
         ActionPlanRow row,
         DateTime freezeBoundUtc,
         string planFileName,
         Action<ExecutionLogRow> onRowCompleted)
     {
-        string freezeBoundLiteral = freezeBoundUtc.ToString("yyyy-MM-ddTHH:mm:ssZ");
-        string escapedAddress = row.SenderAddress.Replace("'", "''");
-
-        string filter =
-            $"from/emailAddress/address eq '{escapedAddress}' " +
-            $"and receivedDateTime le {freezeBoundLiteral}";
-
-        // Collect IDs first, then delete. Paging while deleting from the same
-        // collection shifts the pages underneath the iterator.
-        var messageIds = new List<string>();
-
-        var firstPage = await graphClient.Me.MailFolders["inbox"].Messages
-            .GetAsync(requestConfiguration =>
-            {
-                requestConfiguration.QueryParameters.Filter = filter;
-                requestConfiguration.QueryParameters.Top = 100;
-                requestConfiguration.QueryParameters.Select = new[] { "id" };
-            });
-
-        var pageIterator = PageIterator<Message, MessageCollectionResponse>.CreatePageIterator(
-            graphClient,
-            firstPage!,
-            message =>
-            {
-                if (!string.IsNullOrEmpty(message.Id))
-                {
-                    messageIds.Add(message.Id);
-                }
-                return true;
-            });
-
-        await pageIterator.IterateAsync();
+        var messages = await emailProvider.ListFromSenderAsync("inbox", row.SenderAddress, freezeBoundUtc);
 
         int deleted = 0;
         int alreadyGone = 0;
@@ -60,53 +24,41 @@ public static class PlanExecutor
         int consecutiveFailures = 0;
         bool aborted = false;
 
-        bool permanent = (row.Action ?? string.Empty).Trim()
-            .Equals(ActionPlanGenerator.PermanentDeleteAction, StringComparison.OrdinalIgnoreCase);
+        bool permanent = ActionPlanGenerator.IsPermanentDelete(row.Action);
 
-        foreach (string messageId in messageIds)
+        foreach (var message in messages)
         {
-            string outcome;
-            string error = string.Empty;
+            var result = permanent
+                ? await emailProvider.PermanentDeleteMessageAsync(message.Id)
+                : await emailProvider.DeleteMessageAsync(message.Id);
 
-            try
+            string outcome;
+            switch (result.Outcome)
             {
-                if (permanent)
-                {
-                    await graphClient.Me.Messages[messageId].PermanentDelete.PostAsync();
-                    outcome = ExecutionOutcomes.Purged;
-                }
-                else
-                {
-                    await graphClient.Me.Messages[messageId].DeleteAsync();
-                    outcome = ExecutionOutcomes.Deleted;
-                }
-                deleted++;
-                consecutiveFailures = 0;
-            }
-            catch (ODataError odataError) when (odataError.ResponseStatusCode == 404)
-            {
-                // The desired state was already reached — not a failure.
-                outcome = ExecutionOutcomes.AlreadyGone;
-                alreadyGone++;
-                consecutiveFailures = 0;
-            }
-            catch (Exception ex) when (ex is ODataError or ApiException)
-            {
-                outcome = ExecutionOutcomes.Failed;
-                error = ex is ODataError odata
-                    ? $"{odata.Error?.Code}: {odata.Error?.Message}"
-                    : ex.Message;
-                failed++;
-                consecutiveFailures++;
+                case DeleteOutcome.Deleted:
+                    outcome = permanent ? ExecutionOutcomes.Purged : ExecutionOutcomes.Deleted;
+                    deleted++;
+                    consecutiveFailures = 0;
+                    break;
+                case DeleteOutcome.AlreadyGone:
+                    outcome = ExecutionOutcomes.AlreadyGone;
+                    alreadyGone++;
+                    consecutiveFailures = 0;
+                    break;
+                default:
+                    outcome = ExecutionOutcomes.Failed;
+                    failed++;
+                    consecutiveFailures++;
+                    break;
             }
 
             onRowCompleted(new ExecutionLogRow(
                 ExecutedAtUtc: DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ"),
                 PlanFile: planFileName,
                 SenderAddress: row.SenderAddress,
-                MessageId: messageId,
+                MessageId: message.Id,
                 Outcome: outcome,
-                Error: error));
+                Error: result.Error ?? string.Empty));
 
             if (consecutiveFailures >= ConsecutiveFailureLimit)
             {
@@ -117,7 +69,7 @@ public static class PlanExecutor
 
         return new ExecutionSummary(
             SenderAddress: row.SenderAddress,
-            Resolved: messageIds.Count,
+            Resolved: messages.Count,
             Deleted: deleted,
             AlreadyGone: alreadyGone,
             Failed: failed,

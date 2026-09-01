@@ -9,6 +9,7 @@ using CsvHelper;
 using Azure.Core;
 using System.Collections.Concurrent;
 using MailIntelligenceLab.Planning;
+using MailIntelligenceLab.Ports;
 
 CultureInfo.DefaultThreadCurrentCulture = CultureInfo.InvariantCulture;
 
@@ -199,6 +200,12 @@ catch (Exception ex)
     return;
 }
 
+IEmailProvider emailProvider = new GraphEmailProvider(graphClient);
+var planResolver = new PlanResolver(emailProvider);
+var senderLocator = new SenderLocator(emailProvider);
+var messageInspector = new MessageInspector(emailProvider);
+var planExecutor = new PlanExecutor(emailProvider);
+
 if (args.Length > 0 && args[0].Equals("preview", StringComparison.OrdinalIgnoreCase))
 {
     string plansFolder = Path.GetFullPath(config["Plans:RawFolder"]!);
@@ -247,7 +254,7 @@ if (args.Length > 0 && args[0].Equals("preview", StringComparison.OrdinalIgnoreC
     Console.WriteLine();
 
     var previewStopwatch = Stopwatch.StartNew();
-    var resolutions = await PlanResolver.ResolveAsync(graphClient, markedRows, plan.FreezeBoundUtc);
+    var resolutions = await planResolver.ResolveAsync(markedRows, plan.FreezeBoundUtc);
     previewStopwatch.Stop();
 
     foreach (var resolution in resolutions)
@@ -293,7 +300,7 @@ if (args.Length > 0 && args[0].Equals("verify", StringComparison.OrdinalIgnoreCa
     Console.WriteLine($"Locating messages from: {senderAddress}");
     Console.WriteLine();
 
-    var locations = await SenderLocator.LocateAsync(graphClient, senderAddress);
+    var locations = await senderLocator.LocateAsync(senderAddress);
 
     foreach (var (folder, count, error) in locations)
     {
@@ -316,7 +323,7 @@ if (args.Length > 0 && args[0].Equals("inspect", StringComparison.OrdinalIgnoreC
     string senderAddress = args[1];
     bool showAll = args.Contains("--all", StringComparer.OrdinalIgnoreCase);
 
-    var messages = await MessageInspector.InspectAsync(graphClient, senderAddress);
+    var messages = await messageInspector.InspectAsync(senderAddress);
 
     var toShow = showAll ? messages : messages.Take(15).ToList();
 
@@ -332,7 +339,7 @@ if (args.Length > 0 && args[0].Equals("inspect", StringComparison.OrdinalIgnoreC
     {
         string date = message.ReceivedDateTime?.ToString("yyyy-MM-dd") ?? "(unknown date)";
         string attachment = message.HasAttachments ? "[attachment]" : "";
-        Console.WriteLine($"  {date}  {message.Subject}  {attachment}");
+        Console.WriteLine($"  {date}  {message.Subject ?? "(no subject)"}  {attachment}");
     }
 
     return;
@@ -444,8 +451,7 @@ if (args.Length > 0 && args[0].Equals("execute", StringComparison.OrdinalIgnoreC
         {
             Console.WriteLine($"{row.SenderAddress}...");
 
-            var summary = await PlanExecutor.ExecuteAsync(
-                graphClient,
+            var summary = await planExecutor.ExecuteAsync(
                 row,
                 plan.FreezeBoundUtc,
                 plan.FileName,

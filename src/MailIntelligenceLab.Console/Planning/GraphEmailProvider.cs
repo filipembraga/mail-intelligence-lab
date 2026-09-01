@@ -111,7 +111,7 @@ public sealed class GraphEmailProvider(GraphServiceClient graphClient) : IEmailP
     }
 
     public Task<DeleteResult> DeleteMessageAsync(string messageId) =>
-    ExecuteDeleteAsync(() => graphClient.Me.Messages[messageId].DeleteAsync());
+        ExecuteDeleteAsync(() => graphClient.Me.Messages[messageId].DeleteAsync());
 
     public Task<DeleteResult> PermanentDeleteMessageAsync(string messageId) =>
         ExecuteDeleteAsync(() => graphClient.Me.Messages[messageId].PermanentDelete.PostAsync());
@@ -138,6 +138,9 @@ public sealed class GraphEmailProvider(GraphServiceClient graphClient) : IEmailP
         }
     }
 
+    // OData strings are single-quote delimited; a literal quote inside a value
+    // is escaped by doubling it. Addresses shouldn't contain one, but plan
+    // rows are hand-edited — don't build a filter on trust.
     private static string BuildSenderFilter(string senderAddress, DateTime? receivedOnOrBeforeUtc)
     {
         string escapedAddress = senderAddress.Replace("'", "''");
