@@ -12,10 +12,10 @@ A local-first .NET console tool that reads and understands a real Outlook mailbo
 | ----------------------------------------------------- | ------------------------------------------------ |
 | 🏗️ Architectural layers                               | 1, by design — see [Architecture](#architecture) |
 | 📋 ADRs documented                                    | 4                                                |
-| ✅ Automated tests                                    | 37 — see [Tests](#tests)                         |
+| ✅ Automated tests                                    | 46 — see [Tests](#tests)                         |
 | 📨 Messages read (last full run)                      | 64,833                                           |
 | 📎 Attachment weight recoverable only via a heuristic | 733.8 MB (27.6%) — see [Results](#results)       |
-| 🗑️ Messages purged (Phase 1, so far)                  | 47,221 across 750 senders, 10 failures           |
+| 🗑️ Messages purged (Phase 1, so far)                  | 47,691 across 827 senders, 10 failures           |
 | 📉 Mailbox storage                                    | 96% → 70%                                        |
 
 ---
@@ -108,27 +108,29 @@ So I set one rule before writing a single line of cleanup logic: **no deletions 
 
 Above is the Phase 0 discovery path. Phase 1 added a second path that shares only the credential:
 
-docs/reports/raw/.csv (Phase 0 output — immutable evidence)
+```
+docs/reports/raw/*.csv (Phase 0 output — immutable evidence)
 │
 ▼
-ActionPlanGenerator merge by case, exclude unresolvable,
-│ round to integers, Action column blank
+ActionPlanGenerator   merge by case, exclude unresolvable,
+│                      round to integers, Action column blank
 ▼
-docs/plans/raw/\_action-plan.csv ← edited by hand in a spreadsheet
+docs/plans/raw/*_action-plan.csv ← edited by hand in a spreadsheet
 │
 ▼
-ActionPlanValidator duplicates, unknown actions, unresolvable
-│ senders → whole file rejected, never partial
+ActionPlanValidator   duplicates, unknown actions, unresolvable
+│                      senders → whole file rejected, never partial
 ▼
-PlanResolver (preview) count per sender via $filter, zero writes
+PlanResolver (preview)   count per sender via $filter, zero writes
 │
 ▼
-PlanExecutor (execute) typed confirmation → delete per message
-│ → append-only log, flushed per row
+PlanExecutor (execute)   typed confirmation → delete per message
+│                         → append-only log, flushed per row
 ▼
-docs/logs/raw/\*\_execution-log.csv
+docs/logs/raw/*_execution-log.csv
+```
 
-Phase 1's decision logic lives in `Planning/`, deliberately separated from `Program.cs`: `Generate`, `Validate` and `IsResolvable` are pure functions that touch neither Graph nor the filesystem, and all I/O stays in the entry point. That boundary is the one [Architecture](#architecture) said would be revisited when Phase 1 introduced logic worth protecting — it was.
+Phase 1's decision logic lives in `MailIntelligenceLab.Core`, a separate project with no reference to `Microsoft.Graph` at all. `Generate`, `Validate`, `PlanResolver`, `PlanExecutor`, `SenderLocator` and `MessageInspector` depend only on `IEmailProvider` — a port defined in `Core/Ports/` — never on `GraphServiceClient` directly. `MailIntelligenceLab.Console` supplies the one concrete adapter, `GraphEmailProvider`, and is where all Graph-specific exception handling and OData filter-building live. That boundary is the one [Architecture](#architecture) said would be revisited when Phase 1 introduced logic worth protecting — it was, twice: first by separating `Planning/` from `Program.cs`, then by separating it from Graph entirely once a second driving adapter (a planned local web UI) made the seam load-bearing rather than speculative.
 
 ---
 
@@ -214,7 +216,7 @@ No destructive operation runs without a generated plan file, edited by hand, val
 
 **Consequences**
 
-- The plan file is a reviewable, diffable artifact of intent, separate from the record of what happened — nine rounds, 47,221 messages, 10 failures
+- The plan file is a reviewable, diffable artifact of intent, separate from the record of what happened — ten rounds, 47,691 messages, 10 failures
 - Validation rejects the whole file rather than skipping bad rows: a partially-executed plan would leave the mailbox in a state neither the plan nor the log fully describes
 - Re-running a plan is safe: senders already purged resolve to zero and no-op, demonstrated in rounds 2 and 3
 - Failures continue rather than abort, each logged individually, with a circuit breaker at 10 consecutive failures — independent failures are worth pushing through, a repeated one means something changed since `preview`
@@ -296,28 +298,43 @@ No client-side rate limiter exists yet, deliberately: measured throughput has st
 ```
 MailIntelligenceLab.sln
 
-src/MailIntelligenceLab.Console/
+src/MailIntelligenceLab.Core/          # no Microsoft.Graph reference — pure domain
 ├── Models/
 │   ├── EmailMetadata.cs        # per-message record: Id, sender, received date,
 │   │                           # hasAttachments, body length, cid: flag
 │   ├── SenderReportRow.cs      # per-sender aggregate: counts, sizes, age stats
 │   └── ActionPlanRow.cs        # one plan row: report columns + editable Action
-├── Planning/                   # Phase 1 decision logic — no I/O, no Graph
+├── Ports/
+│   └── IEmailProvider.cs       # every Graph operation the domain calls,
+│                               # as an interface — MessageSummary, DeleteResult
+├── Planning/
 │   ├── ActionPlanGenerator.cs  # report → plan (merge by case, exclude, round)
 │   ├── ActionPlanValidator.cs  # duplicates, unknown actions, unresolvable
-│   ├── ActionPlanLoader.cs     # find newest plan, parse freeze bound
-│   ├── PlanResolver.cs         # count per sender via $filter (preview)
+│   ├── ExecutionLogAggregator.cs # subtract prior rounds' removed messages
+│   ├── ExecutionOutcomes.cs    # deleted/purged/already-gone/failed constants
+│   ├── PlanResolver.cs         # count per sender via IEmailProvider (preview)
 │   ├── PlanExecutor.cs         # delete/purge per message + circuit breaker
 │   ├── SenderLocator.cs        # count a sender across mail folders (verify)
-│   └── *Result.cs              # result records for each of the above
+│   ├── MessageInspector.cs     # list a sender's messages (inspect)
+│   └── *Result.cs / *Row.cs    # result and log records for the above
+└── MailIntelligenceLab.Core.csproj
+
+src/MailIntelligenceLab.Console/       # the one driving adapter, so far
+├── Planning/
+│   ├── GraphEmailProvider.cs   # the only class that touches GraphServiceClient —
+│   │                           # implements IEmailProvider, owns OData filter
+│   │                           # building and Graph-specific exception handling
+│   └── ActionPlanLoader.cs     # find newest plan, parse freeze bound (file I/O)
 ├── appsettings.json            # AzureAd, Discovery, Reports, Plans,
 │                               # ExecutionLogs, TokenCache config
-└── MailIntelligenceLab.csproj
+├── Program.cs
+└── MailIntelligenceLab.Console.csproj
 
-tests/MailIntelligenceLab.Tests/ # 37 tests over Planning/ — see Tests
+tests/MailIntelligenceLab.Tests/ # 46 tests over Core/Planning/ — see Tests
 ├── SenderReportRowBuilder.cs
 ├── ActionPlanGeneratorTests.cs
 ├── ActionPlanValidatorTests.cs
+├── ExecutionLogAggregatorTests.cs
 └── MailIntelligenceLab.Tests.csproj
 
 docs/
@@ -397,7 +414,7 @@ Report saved to: docs/reports/raw/2026-01-01_1200_senders-report.csv
 
 ## Tests
 
-37 tests over `Planning/`, run with `dotnet test` from the repository root.
+46 tests over `Planning/`, run with `dotnet test` from the repository root.
 
 What they cover is the decision logic and nothing else: `Generate` (case-merge, exclusion of senders no Graph filter can resolve, blank `Action`, message-count-weighted age averaging, ordering), `Validate` (duplicates, unrecognised actions, a marked sender that cannot be resolved, the marked/permanent counts), and the `IsActionable` / `IsPermanentDelete` / `IsResolvable` predicates. These are pure functions over in-memory records — no Graph, no filesystem — which is why they were the first thing worth testing and why they were testable at all.
 
@@ -433,13 +450,13 @@ These are the numbers Phase 0 closed on and are kept as a record. A later re-rea
 
 ### Phase 1 — cleanup
 
-| Metric           | Value       |
-| ---------------- | ----------- |
-| Rounds executed  | 9 (ongoing) |
-| Senders acted on | 750         |
-| Messages purged  | 47,221      |
-| Failures         | 10          |
-| Mailbox storage  | 96% → 70%   |
+| Metric           | Value        |
+| ---------------- | ------------ |
+| Rounds executed  | 10 (ongoing) |
+| Senders acted on | 827          |
+| Messages purged  | 47,691       |
+| Failures         | 10           |
+| Mailbox storage  | 96% → 70%    |
 
 The first destructive run was deliberately small: 131 messages from a single sender dormant since 2014, whose count had been independently verified in Outlook, using the recoverable `delete` action. Only after `verify` confirmed where those messages had landed — and after recovering and re-purging them to prove `permanent-delete` behaved differently — did larger rounds run.
 
