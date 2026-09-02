@@ -11,7 +11,7 @@ A local-first .NET console tool that reads and understands a real Outlook mailbo
 |                                                       |                                                  |
 | ----------------------------------------------------- | ------------------------------------------------ |
 | 🏗️ Architectural layers                               | 1, by design — see [Architecture](#architecture) |
-| 📋 ADRs documented                                    | 4                                                |
+| 📋 ADRs documented                                    | 5                                                |
 | ✅ Automated tests                                    | 46 — see [Tests](#tests)                         |
 | 📨 Messages read (last full run)                      | 64,833                                           |
 | 📎 Attachment weight recoverable only via a heuristic | 733.8 MB (27.6%) — see [Results](#results)       |
@@ -223,6 +223,30 @@ No destructive operation runs without a generated plan file, edited by hand, val
   − Plan counts drift from reality between generation and execution; `preview` reports drift per sender but cannot eliminate it
   − Every round requires a fresh ~27-minute discovery run, because the report is immutable and does not know what was deleted — the friction that will most likely reopen [ADR-003](#adr-003--local-persistence-sqlite-deferred)
   − Grouping by domain or pattern is still unimplemented; Phase 1 matches literal sender addresses only, deferred deliberately after the plan schema proved to accommodate it as one extra column
+
+</details>
+
+<details>
+<summary><strong>ADR-005 — A port for email access: hexagonal over layered, once a second driving adapter made it real</strong></summary>
+
+**Status:** Accepted
+
+**Context**
+Phase 1's decision logic (`Generate`, `Validate`, `PlanResolver`, `PlanExecutor`, `SenderLocator`, `MessageInspector`) called `GraphServiceClient` directly. That was fine with one driving adapter — the console. A planned local web UI (Phase 5, see [Roadmap](#roadmap)) introduces a second, and duplicating every Graph call and its exception handling into a second language and process wasn't acceptable — the point of a second UI is to reuse proven logic, not re-derive it. A classic controller/service/repository split was considered and rejected: there is no data store to abstract behind a repository, only two things this project has ever crossed a real boundary to reach — Microsoft Graph and the local filesystem. Forcing a repository-shaped abstraction onto a project with neither a database nor a plausible one would have been ceremony without payoff.
+
+**Decision**
+Introduce `IEmailProvider`, a port defined in `MailIntelligenceLab.Core/Ports/`, exposing the primitives the domain actually calls: read inbox metadata, count or list a sender's messages, fetch attachment info, delete or permanently delete a message. `MailIntelligenceLab.Console` supplies the only adapter today, `GraphEmailProvider`, which owns every OData filter string, every Graph-specific exception type, and the one non-obvious constraint discovered while building it: Graph throws `InefficientFilter` when `$orderby` is combined with this project's sender filter unless the ordered property also appears in the filter first, so `GraphEmailProvider` sorts client-side instead. `MailIntelligenceLab.Core` has no reference to `Microsoft.Graph` at all — every class listed above now depends only on the interface.
+
+Delete operations return a result (`DeleteResult` / `DeleteOutcome`: `Deleted`, `AlreadyGone`, `Failed`) rather than throwing, so `Core` never needs to catch a Graph-specific exception type to know what happened.
+
+**Consequences**
+
+- `PlanExecutor`, `PlanResolver`, `SenderLocator`, and `MessageInspector` are now genuinely portable: a future `MailIntelligenceLab.Api` driving adapter reuses them unchanged, same as the console does today
+- Proven under real load before this ADR was written, not speculatively: the read path via `inspect`, the write path via a 468-sender `execute` round (470 real deletions, 0 failures) — see [Results](#results)
+- Every Graph-specific detail — filter syntax, the `InefficientFilter` constraint, exception typing — is isolated to one adapter class; a reader auditing what talks to Microsoft's API reads one file, not six
+  − `GraphEmailProvider` currently lives in `Console`, with no shared project yet; the moment `Api` exists it needs the same class, at which point this adapter (or an interface-compatible one) moves to a project both driving adapters reference
+  − `discovery` (the bare `dotnet run` full mailbox read) was not rewired to the port — it still calls `GraphServiceClient` directly. Deliberately out of scope: it was never part of what the API needs, and rewiring it isn't free (it also needs a not-yet-called `GetAttachmentInfoAsync` path)
+  − No `IPlanStore` port exists yet for CSV read/write; `ActionPlanLoader` still does direct file I/O from `Console`. A second, similarly-shaped decision, not made here
 
 </details>
 
