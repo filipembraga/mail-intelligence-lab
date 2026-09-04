@@ -1,5 +1,6 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/MailIntelligenceLab.Adapters/MailIntelligenceLab.Adapters.csproj" />
     <Project Path="src/MailIntelligenceLab.Console/MailIntelligenceLab.Console.csproj" />
     <Project Path="src/MailIntelligenceLab.Core/MailIntelligenceLab.Core.csproj" />
   </Folder>

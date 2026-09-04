@@ -25,6 +25,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\MailIntelligenceLab.Core\MailIntelligenceLab.Core.csproj" />
+    <ProjectReference Include="..\MailIntelligenceLab.Adapters\MailIntelligenceLab.Adapters.csproj" />
   </ItemGroup>
 
 </Project>

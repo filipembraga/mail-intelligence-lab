@@ -5,7 +5,7 @@ using Microsoft.Kiota.Abstractions;
 using MailIntelligenceLab.Models;
 using MailIntelligenceLab.Ports;
 
-namespace MailIntelligenceLab.Planning;
+namespace MailIntelligenceLab.Adapters.Graph;
 
 public sealed class GraphEmailProvider(GraphServiceClient graphClient) : IEmailProvider
 {

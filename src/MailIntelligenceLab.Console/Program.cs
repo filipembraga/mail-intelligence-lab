@@ -10,6 +10,7 @@ using Azure.Core;
 using System.Collections.Concurrent;
 using MailIntelligenceLab.Planning;
 using MailIntelligenceLab.Ports;
+using MailIntelligenceLab.Adapters.Graph;
 
 CultureInfo.DefaultThreadCurrentCulture = CultureInfo.InvariantCulture;
 
