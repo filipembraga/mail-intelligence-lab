@@ -1,12 +1,10 @@
 ﻿using Microsoft.Extensions.Configuration;
-using Azure.Identity;
 using Microsoft.Graph;
 using MailIntelligenceLab.Models;
 using Microsoft.Graph.Models;
 using System.Diagnostics;
 using System.Globalization;
 using CsvHelper;
-using Azure.Core;
 using System.Collections.Concurrent;
 using MailIntelligenceLab.Planning;
 using MailIntelligenceLab.Ports;
@@ -144,55 +142,31 @@ if (args.Length > 0 && !knownVerbs.Contains(args[0], StringComparer.OrdinalIgnor
     return;
 }
 
-string clientId = config["AzureAd:ClientId"]!;
-string tenantId = config["AzureAd:TenantId"]!;
+var graphOptions = new GraphClientOptions(
+    ClientId: config["AzureAd:ClientId"]!,
+    TenantId: config["AzureAd:TenantId"]!,
+    TokenCacheFolder: config["TokenCache:FolderPath"]!,
+    TokenCacheName: config["TokenCache:CacheName"]!,
+    AllowInteractiveAuthentication: true);
 
-string tokenCacheFolder = config["TokenCache:FolderPath"]!
-    .Replace("~", Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
-Directory.CreateDirectory(tokenCacheFolder);
-string authRecordPath = Path.Combine(tokenCacheFolder, "authrecord.bin");
+var authentication = await GraphClientFactory.CreateAsync(
+    graphOptions,
+    deviceCodeMessageWriter: Console.WriteLine);
 
-var tokenCacheOptions = new TokenCachePersistenceOptions
+if (authentication.Outcome != GraphAuthenticationOutcome.Authenticated)
 {
-    Name = config["TokenCache:CacheName"]
-};
-
-AuthenticationRecord? authRecord = null;
-if (File.Exists(authRecordPath))
-{
-    using var readStream = new FileStream(authRecordPath, FileMode.Open, FileAccess.Read);
-    authRecord = await AuthenticationRecord.DeserializeAsync(readStream);
+    Console.WriteLine($"ERROR authenticating: {authentication.Error}");
+    return;
 }
 
-var credentialOptions = new DeviceCodeCredentialOptions
-{
-    TenantId = tenantId,
-    ClientId = clientId,
-    TokenCachePersistenceOptions = tokenCacheOptions,
-    AuthenticationRecord = authRecord,
-    DeviceCodeCallback = (code, cancellationToken) =>
-    {
-        Console.WriteLine(code.Message);
-        return Task.CompletedTask;
-    }
-};
+var graphClient = authentication.Client!;
 
-var credential = new DeviceCodeCredential(credentialOptions);
-
-if (authRecord is null)
-{
-    var graphScope = new TokenRequestContext(new[] { "User.Read", "Mail.ReadWrite" });
-    var newRecord = await credential.AuthenticateAsync(graphScope);
-    using var writeStream = new FileStream(authRecordPath, FileMode.Create, FileAccess.Write);
-    await newRecord.SerializeAsync(writeStream);
-}
-
-var graphClient = new GraphServiceClient(credential, new[] { "User.Read", "Mail.ReadWrite" });
+IEmailProvider emailProvider = new GraphEmailProvider(graphClient);
 
 try
 {
-    var me = await graphClient.Me.GetAsync();
-    Console.WriteLine($"Authenticated as: {me?.DisplayName} ({me?.Mail ?? me?.UserPrincipalName})");
+    var (displayName, mail) = await emailProvider.GetCurrentUserAsync();
+    Console.WriteLine($"Authenticated as: {displayName} ({mail})");
 }
 catch (Exception ex)
 {
@@ -201,7 +175,6 @@ catch (Exception ex)
     return;
 }
 
-IEmailProvider emailProvider = new GraphEmailProvider(graphClient);
 var planResolver = new PlanResolver(emailProvider);
 var senderLocator = new SenderLocator(emailProvider);
 var messageInspector = new MessageInspector(emailProvider);
