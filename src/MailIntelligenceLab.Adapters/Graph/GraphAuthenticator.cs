@@ -4,14 +4,14 @@ using Microsoft.Graph;
 
 namespace MailIntelligenceLab.Adapters.Graph;
 
-public sealed record GraphClientOptions(
+public sealed record GraphAuthenticationOptions(
     string ClientId,
     string TenantId,
     string TokenCacheFolder,
     string TokenCacheName,
     bool AllowInteractiveAuthentication);
 
-public static class GraphClientFactory
+public static class GraphAuthenticator
 {
     // One place: three bugs in this project came from this array being updated
     // in one location and not the other — see ADR-002.
@@ -20,7 +20,7 @@ public static class GraphClientFactory
     private const string AuthRecordFileName = "authrecord.bin";
 
     public static async Task<GraphAuthenticationResult> CreateAsync(
-        GraphClientOptions options,
+        GraphAuthenticationOptions options,
         Action<string>? deviceCodeMessageWriter = null,
         CancellationToken cancellationToken = default)
     {

@@ -142,14 +142,14 @@ if (args.Length > 0 && !knownVerbs.Contains(args[0], StringComparer.OrdinalIgnor
     return;
 }
 
-var graphOptions = new GraphClientOptions(
+var graphOptions = new GraphAuthenticationOptions(
     ClientId: config["AzureAd:ClientId"]!,
     TenantId: config["AzureAd:TenantId"]!,
     TokenCacheFolder: config["TokenCache:FolderPath"]!,
     TokenCacheName: config["TokenCache:CacheName"]!,
     AllowInteractiveAuthentication: true);
 
-var authentication = await GraphClientFactory.CreateAsync(
+var authentication = await GraphAuthenticator.CreateAsync(
     graphOptions,
     deviceCodeMessageWriter: Console.WriteLine);
 
