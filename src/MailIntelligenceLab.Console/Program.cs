@@ -9,6 +9,7 @@ using System.Collections.Concurrent;
 using MailIntelligenceLab.Planning;
 using MailIntelligenceLab.Ports;
 using MailIntelligenceLab.Adapters.Graph;
+using MailIntelligenceLab.Adapters.Planning;
 
 CultureInfo.DefaultThreadCurrentCulture = CultureInfo.InvariantCulture;
 
@@ -16,6 +17,8 @@ IConfiguration config = new ConfigurationBuilder()
     .SetBasePath(AppContext.BaseDirectory)
     .AddJsonFile("appsettings.json", optional: false)
     .Build();
+
+IPlanStore planStore = new FileSystemPlanStore(Path.GetFullPath(config["Plans:RawFolder"]!));
 
 if (args.Length > 0 && args[0].Equals("plan", StringComparison.OrdinalIgnoreCase))
 {
@@ -64,7 +67,7 @@ if (args.Length > 0 && args[0].Equals("plan", StringComparison.OrdinalIgnoreCase
     // UTC, not local time: this timestamp is the plan's freeze bound, used as
     // a receivedDateTime upper limit when the plan is executed.
     string planTimestamp = DateTime.UtcNow.ToString("yyyy-MM-dd_HHmm");
-    string planPath = Path.Combine(plansFolder, $"{planTimestamp}{ActionPlanLoader.FileSuffix}");
+    string planPath = Path.Combine(plansFolder, $"{planTimestamp}{FileSystemPlanStore.FileSuffix}");
 
     using (var planWriter = new StreamWriter(planPath))
     using (var planCsv = new CsvWriter(planWriter, CultureInfo.InvariantCulture))
@@ -84,17 +87,17 @@ if (args.Length > 0 && args[0].Equals("validate", StringComparison.OrdinalIgnore
 {
     string plansFolder = Path.GetFullPath(config["Plans:RawFolder"]!);
 
-    var latestPlanFile = ActionPlanLoader.FindNewest(plansFolder);
-    if (latestPlanFile is null)
+    var latestPlanPath = planStore.FindNewestPath();
+    if (latestPlanPath is null)
     {
         Console.WriteLine($"No action plan found in: {plansFolder}");
         return;
     }
 
-    var plan = ActionPlanLoader.Load(latestPlanFile);
+    var plan = planStore.Load(latestPlanPath);
     if (plan is null)
     {
-        Console.WriteLine($"FAILED: cannot read freeze bound from filename '{latestPlanFile.Name}'.");
+        Console.WriteLine($"FAILED: cannot read freeze bound from filename '{Path.GetFileName(latestPlanPath)}'.");
         return;
     }
 
@@ -184,17 +187,17 @@ if (args.Length > 0 && args[0].Equals("preview", StringComparison.OrdinalIgnoreC
 {
     string plansFolder = Path.GetFullPath(config["Plans:RawFolder"]!);
 
-    var latestPlanFile = ActionPlanLoader.FindNewest(plansFolder);
-    if (latestPlanFile is null)
+    var latestPlanPath = planStore.FindNewestPath();
+    if (latestPlanPath is null)
     {
         Console.WriteLine($"No action plan found in: {plansFolder}");
         return;
     }
 
-    var plan = ActionPlanLoader.Load(latestPlanFile);
+    var plan = planStore.Load(latestPlanPath);
     if (plan is null)
     {
-        Console.WriteLine($"FAILED: cannot read freeze bound from filename '{latestPlanFile.Name}'.");
+        Console.WriteLine($"FAILED: cannot read freeze bound from filename '{Path.GetFileName(latestPlanPath)}'.");
         return;
     }
 
@@ -336,7 +339,7 @@ if (args.Length > 0 && args[0].Equals("execute", StringComparison.OrdinalIgnoreC
         return;
     }
 
-    var plan = ActionPlanLoader.Load(planFile);
+    var plan = planStore.Load(planFile.FullName);
     if (plan is null)
     {
         Console.WriteLine($"FAILED: cannot read freeze bound from filename '{planFile.Name}'.");

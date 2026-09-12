@@ -1,27 +1,31 @@
 using System.Globalization;
 using CsvHelper;
 using MailIntelligenceLab.Models;
+using MailIntelligenceLab.Planning;
+using MailIntelligenceLab.Ports;
 
-namespace MailIntelligenceLab.Planning;
+namespace MailIntelligenceLab.Adapters.Planning;
 
-public static class ActionPlanLoader
+public sealed class FileSystemPlanStore(string plansFolder) : IPlanStore
 {
     public const string FileSuffix = "_action-plan.csv";
     private const string TimestampFormat = "yyyy-MM-dd_HHmm";
 
-    public static FileInfo? FindNewest(string plansFolder) =>
+    public string? FindNewestPath() =>
         new DirectoryInfo(plansFolder)
             .GetFiles($"*{FileSuffix}")
             // Ordinal on a yyyy-MM-dd_HHmm prefix: lexicographic order is chronological.
             .OrderByDescending(file => file.Name, StringComparer.Ordinal)
-            .FirstOrDefault();
+            .FirstOrDefault()
+            ?.FullName;
 
     // Returns null when the filename doesn't carry a parseable freeze bound.
     // Every verb that reads a plan must fail on that, not guess a bound —
     // the bound is what stops the executor from acting on mail that arrived
     // after the plan was approved.
-    public static LoadedPlan? Load(FileInfo planFile)
+    public LoadedPlan? Load(string planFilePath)
     {
+        var planFile = new FileInfo(planFilePath);
         string timestampPart = planFile.Name[..^FileSuffix.Length];
 
         if (!DateTime.TryParseExact(
