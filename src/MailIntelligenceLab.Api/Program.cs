@@ -1,5 +1,6 @@
 using System.Globalization;
 using MailIntelligenceLab.Adapters.Graph;
+using MailIntelligenceLab.Adapters.Planning;
 using MailIntelligenceLab.Ports;
 
 CultureInfo.DefaultThreadCurrentCulture = CultureInfo.InvariantCulture;
@@ -23,6 +24,44 @@ var authentication = await GraphAuthenticator.CreateAsync(graphOptions);
 IEmailProvider? emailProvider = authentication.Outcome == GraphAuthenticationOutcome.Authenticated
     ? new GraphEmailProvider(authentication.Client!)
     : null;
+
+IPlanStore planStore = new FileSystemPlanStore(
+    Path.GetFullPath(builder.Configuration["Plans:RawFolder"]!));
+
+// No auth: this reads a local file that is already readable on this disk,
+// served on localhost. Revisit if either of those stops being true.
+app.MapGet("/api/plan", () =>
+{
+    string? planPath = planStore.FindNewestPath();
+
+    if (planPath is null)
+    {
+        return Results.Json(new
+        {
+            status = "no-plan",
+            remedy = "Run 'dotnet run -- plan' in src/MailIntelligenceLab.Console to generate one."
+        }, statusCode: StatusCodes.Status404NotFound);
+    }
+
+    var plan = planStore.Load(planPath);
+
+    if (plan is null)
+    {
+        return Results.Json(new
+        {
+            status = "unparseable-plan",
+            fileName = Path.GetFileName(planPath),
+            detail = "Filename carries no parseable freeze bound."
+        }, statusCode: StatusCodes.Status422UnprocessableEntity);
+    }
+
+    return Results.Ok(new
+    {
+        fileName = plan.FileName,
+        freezeBoundUtc = plan.FreezeBoundUtc,
+        rows = plan.Rows
+    });
+});
 
 app.MapGet("/api/auth", () => authentication.Outcome switch
 {
