@@ -45,4 +45,30 @@ public sealed class FileSystemPlanStore(string plansFolder) : IPlanStore
 
         return new LoadedPlan(planFile.Name, planFile.FullName, freezeBoundUtc, rows);
     }
+
+    public void Save(string planFilePath, IReadOnlyList<ActionPlanRow> rows)
+    {
+        var planFile = new FileInfo(planFilePath);
+
+        // .tmp, not the plan suffix: FindNewestPath must never see a half-written file.
+        string tempPath = Path.Combine(planFile.DirectoryName!, $".{planFile.Name}.{Guid.NewGuid():N}.tmp");
+
+        try
+        {
+            using (var writer = new StreamWriter(tempPath))
+            using (var csv = new CsvWriter(writer, CultureInfo.InvariantCulture))
+            {
+                csv.WriteRecords(rows);
+            }
+
+            File.Move(tempPath, planFile.FullName, overwrite: true);
+        }
+        catch
+        {
+            // Swallowed deliberately: a cleanup failure must not replace the
+            // exception that explains why the write failed.
+            try { File.Delete(tempPath); } catch { }
+            throw;
+        }
+    }
 }
