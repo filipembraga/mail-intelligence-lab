@@ -135,6 +135,50 @@ app.MapPut("/api/plan/marks", (MarkPlanRequest request) =>
     });
 });
 
+app.MapGet("/api/messages", async (string? sender) =>
+{
+    if (string.IsNullOrWhiteSpace(sender))
+    {
+        return Results.Json(new
+        {
+            status = "missing-sender",
+            detail = "Query parameter 'sender' is required."
+        }, statusCode: StatusCodes.Status400BadRequest);
+    }
+
+    if (emailProvider is null)
+    {
+        return Results.Json(new
+        {
+            status = "authentication-required",
+            detail = authentication.Error,
+            remedy = "Run 'dotnet run' once in src/MailIntelligenceLab.Console to authenticate, then restart this API — authentication is probed only at startup."
+        }, statusCode: StatusCodes.Status401Unauthorized);
+    }
+
+    IReadOnlyList<MessageSummary> messages;
+    try
+    {
+        messages = await new MessageInspector(emailProvider).InspectAsync(sender);
+    }
+    catch (Exception ex)
+    {
+        // 502, not 500: this host is healthy and Graph is the dependency that failed.
+        return Results.Json(new
+        {
+            status = "graph-error",
+            detail = ex.Message
+        }, statusCode: StatusCodes.Status502BadGateway);
+    }
+
+    return Results.Ok(new
+    {
+        senderAddress = sender,
+        messageCount = messages.Count,
+        messages
+    });
+});
+
 app.MapGet("/api/auth", () => authentication.Outcome switch
 {
     GraphAuthenticationOutcome.Authenticated =>
