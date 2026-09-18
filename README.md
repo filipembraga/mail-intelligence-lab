@@ -2,21 +2,21 @@
 
 A local-first .NET console tool that reads and understands a real Outlook mailbox via the Microsoft Graph API — before deciding what, if anything, to clean up.
 
-> This is a personal engineering lab, not a product. Phase 0 (Discovery) is complete and Phase 1 (Bulk cleanup) is in progress: authentication, full metadata read, real attachment sizing, and a plan-driven deletion workflow that has removed 47,221 messages so far from a real 20+ year old mailbox. Every deletion this tool performs requires a plan file, an explicit confirmation typed at the prompt, and leaves an append-only log — see [What deletion actually does](#what-deletion-actually-does).
+> This is a personal engineering lab, not a product. Phase 0 (Discovery) and Phase 1 (Bulk cleanup) are complete: authentication, full metadata read, real attachment sizing, and a plan-driven deletion workflow that has removed 47,691 messages from a real 20+ year old mailbox. A local API now reads and marks the same plan file the console does, and lists a sender's messages. Every deletion this tool performs requires a plan file, an explicit confirmation typed at the prompt, and leaves an append-only log — see [What deletion actually does](#what-deletion-actually-does).
 
 ---
 
 ## Snapshot
 
-|                                                       |                                                  |
-| ----------------------------------------------------- | ------------------------------------------------ |
-| 🏗️ Architectural layers                               | 1, by design — see [Architecture](#architecture) |
-| 📋 ADRs documented                                    | 5                                                |
-| ✅ Automated tests                                    | 46 — see [Tests](#tests)                         |
-| 📨 Messages read (last full run)                      | 64,833                                           |
-| 📎 Attachment weight recoverable only via a heuristic | 733.8 MB (27.6%) — see [Results](#results)       |
-| 🗑️ Messages purged (Phase 1, so far)                  | 47,691 across 827 senders, 10 failures           |
-| 📉 Mailbox storage                                    | 96% → 70%                                        |
+|                                                       |                                                                             |
+| ----------------------------------------------------- | --------------------------------------------------------------------------- |
+| 🏗️ Architecture                                       | Hexagonal — 2 ports, 2 driving adapters — see [Architecture](#architecture) |
+| 📋 ADRs documented                                    | 6                                                                           |
+| ✅ Automated tests                                    | 56 — see [Tests](#tests)                                                    |
+| 📨 Messages read (last full run)                      | 64,833                                                                      |
+| 📎 Attachment weight recoverable only via a heuristic | 733.8 MB (27.6%) — see [Results](#results)                                  |
+| 🗑️ Messages purged (Phase 1, so far)                  | 47,691 across 827 senders, 10 failures                                      |
+| 📉 Mailbox storage                                    | 96% → 70%                                                                   |
 
 ---
 
@@ -24,7 +24,8 @@ A local-first .NET console tool that reads and understands a real Outlook mailbo
 
 | Category   | Technology                                                     |
 | ---------- | -------------------------------------------------------------- |
-| Runtime    | .NET 10 (console, top-level statements)                        |
+| Runtime    | .NET 10 (console and minimal-API host, top-level statements)   |
+| Local API  | ASP.NET Core minimal APIs — localhost only, no hosting         |
 | Mail API   | Microsoft Graph SDK (`Microsoft.Graph`)                        |
 | Auth       | Azure.Identity — `DeviceCodeCredential`, persisted token cache |
 | Config     | `Microsoft.Extensions.Configuration` (JSON + binder)           |
@@ -130,7 +131,39 @@ PlanExecutor (execute)   typed confirmation → delete per message
 docs/logs/raw/*_execution-log.csv
 ```
 
-Phase 1's decision logic lives in `MailIntelligenceLab.Core`, a separate project with no reference to `Microsoft.Graph` at all. `Generate`, `Validate`, `PlanResolver`, `PlanExecutor`, `SenderLocator` and `MessageInspector` depend only on `IEmailProvider` — a port defined in `Core/Ports/` — never on `GraphServiceClient` directly. `MailIntelligenceLab.Console` supplies the one concrete adapter, `GraphEmailProvider`, and is where all Graph-specific exception handling and OData filter-building live. That boundary is the one [Architecture](#architecture) said would be revisited when Phase 1 introduced logic worth protecting — it was, twice: first by separating `Planning/` from `Program.cs`, then by separating it from Graph entirely once a second driving adapter (a planned local web UI) made the seam load-bearing rather than speculative.
+All decision logic lives in `MailIntelligenceLab.Core`, which references neither `Microsoft.Graph` nor any storage library. It defines two ports — `IEmailProvider` and `IPlanStore` — and everything that makes a decision (`Generate`, `Validate`, `PlanMarker`, `PlanResolver`, `PlanExecutor`, `SenderLocator`, `MessageInspector`) depends only on those interfaces. `MailIntelligenceLab.Adapters` implements both, and is the only project that knows what Microsoft Graph or a CSV file is. Two driving adapters sit on top and never reference each other:
+
+```
+ ┌───────────────────────────┐        ┌───────────────────────────┐
+ │   ...Console              │        │   ...Api                  │
+ │   driving adapter         │        │   driving adapter         │
+ │   plan · validate ·       │        │   ASP.NET Core minimal    │
+ │   preview · execute ·     │        │   read plan · mark plan · │
+ │   verify · inspect ·      │        │   inspect                 │
+ │   discovery               │        │   (localhost, no hosting) │
+ └─────────────┬─────────────┘        └─────────────┬─────────────┘
+               │                                    │
+               └────────────────┬───────────────────┘
+                                ▼
+                 ┌────────────────────────────────┐
+                 │   ...Core                      │
+                 │   no Graph, no CSV, no I/O     │
+                 │   Ports: IEmailProvider        │
+                 │          IPlanStore            │
+                 │   Planning: the decision logic │
+                 └────────────────▲───────────────┘
+                                  │ implements
+                 ┌────────────────┴───────────────┐
+                 │   ...Adapters                  │
+                 │   GraphEmailProvider           │
+                 │   GraphAuthenticator           │
+                 │   FileSystemPlanStore          │
+                 └────────────────────────────────┘
+```
+
+That seam was revisited three times, each on measured need rather than anticipation: first separating `Planning/` from `Program.cs`, then separating it from Graph entirely ([ADR-005](#adr-005--a-port-for-email-access-hexagonal-over-layered-once-a-second-driving-adapter-made-it-real)) once a second driving adapter made it load-bearing, then separating plan file access ([ADR-006](#adr-006--a-port-for-the-plan-file-one-implementation-and-no-second-in-sight)) once that second adapter had to write the file, not just read it.
+
+**The API deliberately cannot authenticate.** Device code flow needs a human reading a code off a screen; a web host has no screen anyone is watching, so `MailIntelligenceLab.Api` runs with `DisableAutomaticAuthentication`, reads the token cache the console wrote, and returns `401` with an instruction rather than printing a code into a stdout nobody sees. Interactive login has exactly one home, and it is the terminal.
 
 ---
 
@@ -235,18 +268,42 @@ No destructive operation runs without a generated plan file, edited by hand, val
 Phase 1's decision logic (`Generate`, `Validate`, `PlanResolver`, `PlanExecutor`, `SenderLocator`, `MessageInspector`) called `GraphServiceClient` directly. That was fine with one driving adapter — the console. A planned local web UI (Phase 5, see [Roadmap](#roadmap)) introduces a second, and duplicating every Graph call and its exception handling into a second language and process wasn't acceptable — the point of a second UI is to reuse proven logic, not re-derive it. A classic controller/service/repository split was considered and rejected: there is no data store to abstract behind a repository, only two things this project has ever crossed a real boundary to reach — Microsoft Graph and the local filesystem. Forcing a repository-shaped abstraction onto a project with neither a database nor a plausible one would have been ceremony without payoff.
 
 **Decision**
-Introduce `IEmailProvider`, a port defined in `MailIntelligenceLab.Core/Ports/`, exposing the primitives the domain actually calls: read inbox metadata, count or list a sender's messages, fetch attachment info, delete or permanently delete a message. `MailIntelligenceLab.Console` supplies the only adapter today, `GraphEmailProvider`, which owns every OData filter string, every Graph-specific exception type, and the one non-obvious constraint discovered while building it: Graph throws `InefficientFilter` when `$orderby` is combined with this project's sender filter unless the ordered property also appears in the filter first, so `GraphEmailProvider` sorts client-side instead. `MailIntelligenceLab.Core` has no reference to `Microsoft.Graph` at all — every class listed above now depends only on the interface.
+Introduce `IEmailProvider`, a port defined in `MailIntelligenceLab.Core/Ports/`, exposing the primitives the domain actually calls: read inbox metadata, count or list a sender's messages, fetch attachment info, delete or permanently delete a message. `MailIntelligenceLab.Adapters` supplies the only adapter, `GraphEmailProvider`, which owns every OData filter string, every Graph-specific exception type, and the one non-obvious constraint discovered while building it: Graph throws `InefficientFilter` when `$orderby` is combined with this project's sender filter unless the ordered property also appears in the filter first, so `GraphEmailProvider` sorts client-side instead. `MailIntelligenceLab.Core` has no reference to `Microsoft.Graph` at all — every class listed above now depends only on the interface.
 
 Delete operations return a result (`DeleteResult` / `DeleteOutcome`: `Deleted`, `AlreadyGone`, `Failed`) rather than throwing, so `Core` never needs to catch a Graph-specific exception type to know what happened.
 
 **Consequences**
 
-- `PlanExecutor`, `PlanResolver`, `SenderLocator`, and `MessageInspector` are now genuinely portable: a future `MailIntelligenceLab.Api` driving adapter reuses them unchanged, same as the console does today
+- `PlanExecutor`, `PlanResolver`, `SenderLocator`, and `MessageInspector` proved genuinely portable: `MailIntelligenceLab.Api` reuses `MessageInspector` unchanged, exactly as the console does
 - Proven under real load before this ADR was written, not speculatively: the read path via `inspect`, the write path via a 468-sender `execute` round (470 real deletions, 0 failures) — see [Results](#results)
 - Every Graph-specific detail — filter syntax, the `InefficientFilter` constraint, exception typing — is isolated to one adapter class; a reader auditing what talks to Microsoft's API reads one file, not six
-  − `GraphEmailProvider` currently lives in `Console`, with no shared project yet; the moment `Api` exists it needs the same class, at which point this adapter (or an interface-compatible one) moves to a project both driving adapters reference
-  − `discovery` (the bare `dotnet run` full mailbox read) was not rewired to the port — it still calls `GraphServiceClient` directly. Deliberately out of scope: it was never part of what the API needs, and rewiring it isn't free (it also needs a not-yet-called `GetAttachmentInfoAsync` path)
-  − No `IPlanStore` port exists yet for CSV read/write; `ActionPlanLoader` still does direct file I/O from `Console`. A second, similarly-shaped decision, not made here
+- The predicted move happened as written: when `Api` was scaffolded, `GraphEmailProvider` moved out of `Console` into `MailIntelligenceLab.Adapters`, a project both driving adapters reference and neither owns. Building it surfaced the cost of naming things after the library they wrap — a factory first called `GraphClientFactory` collided with `Microsoft.Graph.GraphClientFactory`, and was renamed `GraphAuthenticator`
+  − `discovery` (the bare `dotnet run` full mailbox read) was still not rewired to the port — it calls `GraphServiceClient` directly. Deliberately out of scope: it was never part of what the API needs, and rewiring it isn't free (it also needs a not-yet-called `GetAttachmentInfoAsync` path)
+  − Moving the adapter revealed that four classes this ADR described as living in `Core` were still in `Console`: the rewire had happened, the move had not. The ADR was accurate about the dependency direction and wrong about the file layout for several weeks — found by a second adapter trying to use them, not by a reader
+
+</details>
+
+<details>
+<summary><strong>ADR-006 — A port for the plan file: one implementation, and no second in sight</strong></summary>
+
+**Status:** Accepted
+
+**Context**
+The local API has to read the newest plan and write marks back into it. Plan file access lived in `ActionPlanLoader`, doing direct file I/O from inside `MailIntelligenceLab.Console` — the same shape of problem [ADR-005](#adr-005--a-port-for-email-access-hexagonal-over-layered-once-a-second-driving-adapter-made-it-real) solved for Graph, and the same one that ADR left explicitly unmade. The justification is not the same one, and pretending otherwise would be dishonest: there is no second implementation of a plan store in sight and probably never will be. [ADR-001](#adr-001--local-first-as-a-principle-not-a-feature) rules out a remote store, and SQLite is a separate deferred question ([ADR-003](#adr-003--local-persistence-sqlite-deferred)) about a different problem. Swappability buys nothing here. What does matter is that writing back to a plan file has real rules — every column other than `Action` must survive untouched, the filename carries the freeze bound and cannot change, an unknown sender or an unrecognised action must reject the whole request rather than apply part of it — and rules that live behind a file I/O call cannot be unit tested.
+
+**Decision**
+Define `IPlanStore` in `MailIntelligenceLab.Core/Ports/` with three operations: find the newest plan, load one, save one. `FileSystemPlanStore` in `MailIntelligenceLab.Adapters` implements it and contains **no rules at all** — it writes exactly the rows it is handed, to a temporary file in the same directory, then moves that over the target, because a direct write leaves a truncated plan file if the process dies mid-write.
+
+The rules live in `PlanMarker`, a pure function in `Core` that takes the current rows plus a batch of marks and returns either a new row list or the complete list of errors. Sender matching is case-insensitive, because Graph's `eq` on an address is and the plan generator already merges senders by case. Two marks naming the same sender is an error rather than last-wins: there is no defined precedence, and silently picking one would make the result depend on request ordering.
+
+**Consequences**
+
+- The write-back rules are unit tested alongside the rest of the domain — ten tests, no filesystem, no HTTP
+- Marking is batched, not per-row: the file on disk is either the state before a marking session or the state after, never a partial application. Consistent with [ADR-004](#adr-004--the-action-planner-an-editable-plan-file-as-the-only-path-to-a-destructive-operation)'s rejection of partial plans
+- Proven by round-trip before this ADR was written: marking a sender through the API and then restoring its original value left the 4,198-row file byte-identical to the console-generated original
+  − Weaker justification than ADR-005's. This port buys testability, not portability, and a reader looking for a second adapter will not find one
+  − `Save` itself is untested, for the same reason `PlanResolver` and `PlanExecutor` are — see [Tests](#tests)
+  − Two processes can now write the same plan file with no coordination: the console's `plan` verb and the API's marking endpoint. Harmless for one user with two terminals, unguarded in principle, and the first genuinely new argument for revisiting [ADR-003](#adr-003--local-persistence-sqlite-deferred) since it was written — that ADR deferred SQLite over re-read cost, and never considered concurrent writers
 
 </details>
 
@@ -322,43 +379,68 @@ No client-side rate limiter exists yet, deliberately: measured throughput has st
 ```
 MailIntelligenceLab.sln
 
-src/MailIntelligenceLab.Core/          # no Microsoft.Graph reference — pure domain
+src/MailIntelligenceLab.Core/          # no Microsoft.Graph, no CsvHelper, no I/O
 ├── Models/
 │   ├── EmailMetadata.cs        # per-message record: Id, sender, received date,
 │   │                           # hasAttachments, body length, cid: flag
 │   ├── SenderReportRow.cs      # per-sender aggregate: counts, sizes, age stats
 │   └── ActionPlanRow.cs        # one plan row: report columns + editable Action
 ├── Ports/
-│   └── IEmailProvider.cs       # every Graph operation the domain calls,
-│                               # as an interface — MessageSummary, DeleteResult
+│   ├── IEmailProvider.cs       # every Graph operation the domain calls,
+│   │                           # as an interface — MessageSummary, DeleteResult
+│   └── IPlanStore.cs           # find newest plan, load one, save one
 ├── Planning/
 │   ├── ActionPlanGenerator.cs  # report → plan (merge by case, exclude, round)
 │   ├── ActionPlanValidator.cs  # duplicates, unknown actions, unresolvable
+│   ├── PlanMarker.cs           # apply a batch of marks — the write-back rules
+│   ├── PlanMark.cs             # one mark: sender address + action value
 │   ├── ExecutionLogAggregator.cs # subtract prior rounds' removed messages
 │   ├── ExecutionOutcomes.cs    # deleted/purged/already-gone/failed constants
 │   ├── PlanResolver.cs         # count per sender via IEmailProvider (preview)
 │   ├── PlanExecutor.cs         # delete/purge per message + circuit breaker
 │   ├── SenderLocator.cs        # count a sender across mail folders (verify)
 │   ├── MessageInspector.cs     # list a sender's messages (inspect)
+│   ├── LoadedPlan.cs           # a parsed plan: rows + freeze bound
 │   └── *Result.cs / *Row.cs    # result and log records for the above
 └── MailIntelligenceLab.Core.csproj
 
-src/MailIntelligenceLab.Console/       # the one driving adapter, so far
-├── Planning/
+src/MailIntelligenceLab.Adapters/      # the only project that knows Graph or CSV
+├── Graph/
 │   ├── GraphEmailProvider.cs   # the only class that touches GraphServiceClient —
 │   │                           # implements IEmailProvider, owns OData filter
 │   │                           # building and Graph-specific exception handling
-│   └── ActionPlanLoader.cs     # find newest plan, parse freeze bound (file I/O)
+│   ├── GraphAuthenticator.cs   # device code + persisted cache → GraphServiceClient;
+│   │                           # interactive for the console, cache-only for the API
+│   └── GraphAuthenticationResult.cs # authenticated / required / failed, returned
+│                                    # rather than thrown
+├── Planning/
+│   └── FileSystemPlanStore.cs  # IPlanStore over the plans folder; saves via a
+│                               # temp file then an atomic move. No rules.
+└── MailIntelligenceLab.Adapters.csproj
+
+src/MailIntelligenceLab.Console/       # driving adapter — every verb, and the
+├── Models/                            # only place that can delete
+│   └── AggregationModels.cs    # discovery-only aggregates and age buckets
 ├── appsettings.json            # AzureAd, Discovery, Reports, Plans,
 │                               # ExecutionLogs, TokenCache config
-├── Program.cs
+├── Program.cs                  # verb dispatch + the discovery path, which still
+│                               # calls GraphServiceClient directly (see ADR-005)
 └── MailIntelligenceLab.Console.csproj
 
-tests/MailIntelligenceLab.Tests/ # 46 tests over Core/Planning/ — see Tests
+src/MailIntelligenceLab.Api/           # driving adapter — reads, marks, inspects;
+├── appsettings.json                   # never deletes, never logs you in
+│                               # AzureAd, Plans, TokenCache — duplicated from the
+│                               # console on purpose, so neither host owns the other
+├── Program.cs                  # four minimal-API endpoints
+└── MailIntelligenceLab.Api.csproj
+
+tests/MailIntelligenceLab.Tests/ # 56 tests over Core/Planning/ — see Tests
 ├── SenderReportRowBuilder.cs
+├── ActionPlanRowBuilder.cs
 ├── ActionPlanGeneratorTests.cs
 ├── ActionPlanValidatorTests.cs
 ├── ExecutionLogAggregatorTests.cs
+├── PlanMarkerTests.cs
 └── MailIntelligenceLab.Tests.csproj
 
 docs/
@@ -405,6 +487,7 @@ dotnet run -- validate              # check the edited plan, offline
 dotnet run -- preview               # resolve against Graph, zero writes
 dotnet run -- execute <plan-file>   # confirm, then delete
 dotnet run -- verify <address>      # where is this sender's mail now?
+dotnet run -- inspect <address> [--all]  # list a sender's messages in the inbox
 ```
 
 The cleanup loop is `plan` → edit the `Action` column in a spreadsheet → `validate` → `preview` → `execute`. Only `execute` requires an explicit file path: acting on a plan you forgot you had regenerated is the one mistake that can't be undone.
@@ -412,6 +495,22 @@ The cleanup loop is `plan` → edit the `Action` column in a spreadsheet → `va
 Before running `execute` for the first time, read [What deletion actually does](#what-deletion-actually-does) — deleted mail does not go where you probably expect.
 
 **First run:** prints a device code and a URL (`https://www.microsoft.com/link`) — authenticate from any browser, including your phone. **Every run after that:** authenticates silently against the cached `AuthenticationRecord`.
+
+### Running the local API
+
+```bash
+cd src/MailIntelligenceLab.Api
+dotnet run
+```
+
+| Endpoint                          | Does                                                  |
+| --------------------------------- | ----------------------------------------------------- |
+| `GET /api/auth`                   | Whether the token cache was usable at startup         |
+| `GET /api/plan`                   | The newest plan, every row, unpaginated               |
+| `PUT /api/plan/marks`             | Applies a batch of marks to that plan, in place       |
+| `GET /api/messages?sender=<addr>` | A sender's messages in the inbox — the `inspect` verb |
+
+It binds to localhost and is not hosted anywhere. **It cannot log you in and it cannot delete anything**: authenticate with the console first, and `execute` remains a terminal command. Authentication is probed once when the API starts and never retried, so if `/api/auth` returns `401`, authenticating in the console is only half the fix — **restart the API afterwards**, or every Graph-backed call keeps failing against the credential state captured at startup. `/api/plan` and `/api/plan/marks` require no credential — they read and write a file already sitting unencrypted on the same disk, and a credential check would gate data the caller could reach with `cat`. That argument holds only while this is one person on localhost.
 
 **Example output** (real shape, fictional numbers):
 
@@ -438,11 +537,11 @@ Report saved to: docs/reports/raw/2026-01-01_1200_senders-report.csv
 
 ## Tests
 
-46 tests over `Planning/`, run with `dotnet test` from the repository root.
+56 tests over `Core/Planning/`, run with `dotnet test` from the repository root.
 
-What they cover is the decision logic and nothing else: `Generate` (case-merge, exclusion of senders no Graph filter can resolve, blank `Action`, message-count-weighted age averaging, ordering), `Validate` (duplicates, unrecognised actions, a marked sender that cannot be resolved, the marked/permanent counts), and the `IsActionable` / `IsPermanentDelete` / `IsResolvable` predicates. These are pure functions over in-memory records — no Graph, no filesystem — which is why they were the first thing worth testing and why they were testable at all.
+What they cover is the decision logic and nothing else: `Generate` (case-merge, exclusion of senders no Graph filter can resolve, blank `Action`, message-count-weighted age averaging, ordering), `Validate` (duplicates, unrecognised actions, a marked sender that cannot be resolved, the marked/permanent counts), the `IsActionable` / `IsPermanentDelete` / `IsResolvable` predicates, and `PlanMarker` (applying a batch of marks without disturbing any other column, clearing a mark, case-insensitive sender matching, trimming whitespace around an action value, and rejecting the whole batch on an unknown sender, an unrecognised action, or two marks for the same sender). These are pure functions over in-memory records — no Graph, no filesystem, no HTTP — which is why they were the first thing worth testing and why they were testable at all.
 
-`PlanResolver`, `PlanExecutor` and `SenderLocator` are untested. Each is a thin loop around a Graph call, and testing them means either faking `GraphServiceClient` or running against a real mailbox. That's a real gap, deliberately not closed with a mock that would mostly assert that the SDK was called.
+`PlanResolver`, `PlanExecutor`, `SenderLocator`, `MessageInspector` and `FileSystemPlanStore.Save` are untested. Each is a thin loop around a Graph call or a file write, and testing them means either faking `GraphServiceClient` or touching a real mailbox or disk. That's a real gap, deliberately not closed with a mock that would mostly assert that the SDK was called. The API endpoints are untested too, for a narrower reason: each is mostly a `switch` over results the layers beneath already produce, and the mark-validation behaviours worth pinning — unknown sender, unrecognised action, duplicate marks — are pinned one level down, in `PlanMarker`. One behaviour is not, and is worth naming rather than glossing: the stale-filename check, which rejects a marking request whose plan is no longer the newest, lives only in the endpoint. `PlanMarker` never sees a filename. That is the least-covered guard in the write path, and the honest description of it is a gap, not a justified absence.
 
 ---
 
@@ -492,16 +591,17 @@ Storage moved the moment each purge completed, without waiting for any retention
 
 ## What Was Left Out
 
-| Item                            | Reason                                                                                                                                                                                                                                                                                                                                                                            |
-| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Grouping by domain or pattern   | Phase 1 matches literal sender addresses only. Phase 0 found three domain clusters accounting for ~40% of attachment weight, so this is coming — deferred once the plan schema proved to accommodate it as one extra column, rather than designed in speculatively. See [ADR-004](#adr-004--the-action-planner-an-editable-plan-file-as-the-only-path-to-a-destructive-operation) |
-| Any folder other than the inbox | Plans resolve senders within the inbox only. Sent Items and Archive are unmeasured and untouched — a real limit on what "space freed" can mean                                                                                                                                                                                                                                    |
-| A UI for the plan file          | The plan is a CSV edited in a spreadsheet, which is friction by design until the friction is measured. Gated to Phase 5                                                                                                                                                                                                                                                           |
-| Local persistence (SQLite)      | Deferred — see [ADR-003](#adr-003--local-persistence-sqlite-deferred)                                                                                                                                                                                                                                                                                                             |
-| Client-side rate limiting       | Not yet justified by measured request volume — see [Resilience](#resilience)                                                                                                                                                                                                                                                                                                      |
-| AI-based content classification | Phase 2 — requires a PII-masking pipeline (mask → LLM → unmask) before any external model call, not built yet                                                                                                                                                                                                                                                                     |
-| Delta query                     | Phase 3 — plain pagination is sufficient while every run reads the full inbox; delta becomes necessary once incremental sync is the actual problem                                                                                                                                                                                                                                |
-| Any UI beyond the console       | Deliberately gated to Phase 5, and only after Phases 0–2 have run against real data — see roadmap                                                                                                                                                                                                                                                                                 |
+| Item                                            | Reason                                                                                                                                                                                                                                                                                                                                                                            |
+| ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Grouping by domain or pattern                   | Phase 1 matches literal sender addresses only. Phase 0 found three domain clusters accounting for ~40% of attachment weight, so this is coming — deferred once the plan schema proved to accommodate it as one extra column, rather than designed in speculatively. See [ADR-004](#adr-004--the-action-planner-an-editable-plan-file-as-the-only-path-to-a-destructive-operation) |
+| Any folder other than the inbox                 | Plans resolve senders within the inbox only. Sent Items and Archive are unmeasured and untouched — a real limit on what "space freed" can mean                                                                                                                                                                                                                                    |
+| Sorting and marking in a UI                     | Built, in part. A local API now reads the plan, marks it, and inspects a sender — the friction was measured across ten rounds first. The browser frontend that consumes it is not built yet                                                                                                                                                                                       |
+| Local persistence (SQLite)                      | Deferred — see [ADR-003](#adr-003--local-persistence-sqlite-deferred)                                                                                                                                                                                                                                                                                                             |
+| Client-side rate limiting                       | Not yet justified by measured request volume — see [Resilience](#resilience)                                                                                                                                                                                                                                                                                                      |
+| AI-based content classification                 | Phase 2 — requires a PII-masking pipeline (mask → LLM → unmask) before any external model call, not built yet                                                                                                                                                                                                                                                                     |
+| Delta query                                     | Phase 3 — plain pagination is sufficient while every run reads the full inbox; delta becomes necessary once incremental sync is the actual problem                                                                                                                                                                                                                                |
+| Executing a plan from anywhere but the terminal | Still true today: the API marks the plan file and never deletes. The decision to move the typed confirmation into the UI has been made but not built, and will supersede one point of [ADR-004](#adr-004--the-action-planner-an-editable-plan-file-as-the-only-path-to-a-destructive-operation) when it is                                                                        |
+| Per-message selection within a sender           | `inspect` lists a sender's messages but nothing can act on one. This collides deliberately with ADR-004's "rules, not resolved IDs" and needs its own design                                                                                                                                                                                                                      |
 
 ---
 
@@ -534,14 +634,17 @@ The daily digest worker can't re-read the full inbox on every run. Microsoft Gra
 
 ## Roadmap
 
-| Phase | Goal                                                          | Status                |
-| ----- | ------------------------------------------------------------- | --------------------- |
-| 0     | Discovery — understand the data before touching anything      | **Done**              |
-| 1     | Bulk cleanup by metadata, with an Action Planner as guardrail | In progress           |
-| 2     | AI content classification, PII-masked pipeline                | Not started           |
-| 3     | Daily digest (scheduled worker, delta query)                  | Not started           |
-| 4     | Semantic search (RAG)                                         | Not started           |
-| 5     | Product decision — UI, hosting, or neither                    | Not decided by design |
+| Phase | Goal                                                          | Status                         |
+| ----- | ------------------------------------------------------------- | ------------------------------ |
+| 0     | Discovery — understand the data before touching anything      | **Done**                       |
+| 1     | Bulk cleanup by metadata, with an Action Planner as guardrail | **Done** — 96% → 70%           |
+| —     | Local API over the shared domain                              | **Done** — read, mark, inspect |
+| —     | Browser frontend for sorting and marking                      | Next                           |
+| 2     | AI content classification, PII-masked pipeline                | Not started                    |
+| 3     | Daily digest (scheduled worker, delta query)                  | Not started                    |
+| 4     | Semantic search (RAG)                                         | Not started                    |
+
+The UI was never a phase to be reached on schedule — it was gated on the friction proving real. Ten rounds in, sorting and re-reading had both been solved in the terminal and marking had not: every row is an independent keep-or-delete decision, so no pattern-based shortcut survives a plan where adjacent rows disagree. That is what a table with checkboxes solves and a CLI cannot, and that is why this exists now and did not exist at round one.
 
 ---
 
