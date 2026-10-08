@@ -1,26 +1,40 @@
 import { useEffect, useState } from 'react'
-import { getAuthStatus, type AuthStatus } from './api/client'
+import { getAuthStatus, getPlan, type AuthStatus, type PlanResult } from './api/client'
+import PlanTable from './plan/PlanTable'
 
 export default function App() {
-  const [status, setStatus] = useState<AuthStatus | null>(null)
+  const [auth, setAuth] = useState<AuthStatus | null>(null)
+  const [plan, setPlan] = useState<PlanResult | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    getAuthStatus()
-      .then(setStatus)
-      .catch((e: unknown) => setError(String(e)))
+    getAuthStatus().then(setAuth).catch((e: unknown) => setError(String(e)))
+    getPlan().then(setPlan).catch((e: unknown) => setError(String(e)))
   }, [])
 
   return (
     <main>
       <h1>mail-intelligence-lab</h1>
       {error && <p>Request failed: {error}</p>}
-      {status && (
+      {auth && (
         <p>
-          /api/auth → {status.httpStatus}: <code>{status.body}</code>
+          /api/auth → {auth.httpStatus}: <code>{auth.body}</code>
         </p>
       )}
-      {!status && !error && <p>Checking authentication…</p>}
+      {plan === null && !error && <p>Loading plan…</p>}
+      {plan && !plan.ok && (
+        <p>
+          /api/plan → {plan.error.httpStatus}: <code>{JSON.stringify(plan.error.body)}</code>
+        </p>
+      )}
+      {plan && plan.ok && (
+        <>
+          <p>
+            {plan.plan.fileName} — {plan.plan.rows.length} senders
+          </p>
+          <PlanTable rows={plan.plan.rows} />
+        </>
+      )}
     </main>
   )
 }
