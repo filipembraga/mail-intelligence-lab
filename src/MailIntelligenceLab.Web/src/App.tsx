@@ -32,7 +32,7 @@ export default function App() {
           <p>
             {plan.plan.fileName} — {plan.plan.rows.length} senders
           </p>
-          <PlanTable rows={plan.plan.rows} />
+          <PlanTable key={plan.plan.fileName} fileName={plan.plan.fileName} rows={plan.plan.rows} />
         </>
       )}
     </main>

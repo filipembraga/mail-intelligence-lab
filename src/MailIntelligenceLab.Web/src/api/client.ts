@@ -33,3 +33,9 @@ export async function getPlan(): Promise<PlanResult> {
     ? { ok: true, plan: body as Plan }
     : { ok: false, error: { httpStatus: response.status, body } }
 }
+
+export const PlanActions = {
+  keep: '',
+  delete: 'delete',
+  permanentDelete: 'permanent-delete',
+} as const

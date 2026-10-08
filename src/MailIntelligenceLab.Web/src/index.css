@@ -1,0 +1,21 @@
+.toolbar {
+  position: sticky;
+  top: 0;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 0;
+  background: white;
+}
+
+tr.selected {
+  background: #dbeafe;
+}
+
+tr.pending td:last-child {
+  font-weight: bold;
+}
+
+tbody tr {
+  cursor: pointer;
+}
